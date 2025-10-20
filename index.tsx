@@ -45,10 +45,26 @@ const App = () => {
     const [isMergingVideos, setIsMergingVideos] = useState(false);
     const [mergeProgress, setMergeProgress] = useState('');
     const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+    const [mergedVideoUrl, setMergedVideoUrl] = useState<string | null>(null);
+
+    // Notification state
+    const [notification, setNotification] = useState<{ message: string, type: 'success' | 'info' | 'error' } | null>(null);
+    const [confirmDialog, setConfirmDialog] = useState<{ message: string, onConfirm: () => void } | null>(null);
 
     const uploadAreaRef = useRef<HTMLDivElement>(null);
     const ffmpegRef = useRef(new FFmpeg());
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.API_KEY! });
+
+    // Show notification
+    const showNotification = (message: string, type: 'success' | 'info' | 'error' = 'info') => {
+        setNotification({ message, type });
+        setTimeout(() => setNotification(null), 5000);
+    };
+
+    // Show confirm dialog
+    const showConfirm = (message: string, onConfirm: () => void) => {
+        setConfirmDialog({ message, onConfirm });
+    };
 
     // Initialize FFmpeg
     const loadFFmpeg = async () => {
@@ -91,7 +107,7 @@ const App = () => {
     };
 
     // Merge multiple videos into one
-    const mergeVideos = async () => {
+    const mergeVideos = async (autoMerge: boolean = false) => {
         if (generatedVideos.length === 0) {
             setError('No videos to merge. Please generate videos first.');
             return;
@@ -135,18 +151,16 @@ const App = () => {
             const data = await ffmpeg.readFile('output.mp4');
             const mergedBlob = new Blob([data], { type: 'video/mp4' });
 
-            // Download the merged video
+            // Create object URL for preview
             const url = URL.createObjectURL(mergedBlob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `storyboard_video_${Date.now()}.mp4`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
+            setMergedVideoUrl(url);
 
-            setMergeProgress('Video merged and downloaded successfully!');
-            alert('Video merged successfully and saved to your downloads!');
+            setMergeProgress('Video merged successfully!');
+            if (autoMerge) {
+                showNotification('Videos automatically merged! Scroll down to preview.', 'success');
+            } else {
+                showNotification('Video merged successfully! Preview below.', 'success');
+            }
 
             // Clean up FFmpeg files
             for (let i = 0; i < videoBlobs.length; i++) {
@@ -163,6 +177,19 @@ const App = () => {
         }
     };
 
+    // Download merged video
+    const downloadMergedVideo = () => {
+        if (!mergedVideoUrl) return;
+
+        const link = document.createElement('a');
+        link.href = mergedVideoUrl;
+        link.download = `storyboard_video_${Date.now()}.mp4`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showNotification('Video downloaded successfully!', 'success');
+    };
+
     // Save settings to localStorage
     const handleSaveSettings = () => {
         localStorage.setItem('apiKey', apiKey);
@@ -173,7 +200,7 @@ const App = () => {
         localStorage.setItem('promptNode', promptNode);
         localStorage.setItem('saveVideoNode', saveVideoNode);
         setShowSettings(false);
-        alert('設定已儲存！');
+        showNotification('設定已儲存！', 'success');
     };
 
     // Load ComfyUI workflow
@@ -476,14 +503,19 @@ const App = () => {
                 }
             }
 
-            const successMessage = `All videos generated successfully!\n\nGenerated ${generatedVideos.length} videos:\n${generatedVideos.map((url, idx) => `Video ${idx + 1}: ${url}`).join('\n')}`;
+            const successMessage = `All videos generated successfully! Generated ${generatedVideos.length} videos.`;
             console.log('\n' + successMessage);
             setVideoProgress(`All ${generatedVideos.length} videos completed!`);
 
             // Save video URLs to state
             setGeneratedVideos(generatedVideos);
 
-            alert(successMessage + '\n\nYou can now preview or merge the videos!');
+            showNotification(successMessage, 'success');
+
+            // Automatically merge videos after generation
+            setTimeout(() => {
+                mergeVideos(true);
+            }, 1000);
 
         } catch (e: any) {
             console.error('Video generation error:', e);
@@ -572,19 +604,19 @@ const App = () => {
             return;
         }
 
-        const confirmRemove = window.confirm(`Are you sure you want to remove Cut #${storyboard[index].cut}?`);
-        if (!confirmRemove) return;
+        showConfirm(`Are you sure you want to remove Cut #${storyboard[index].cut}?`, () => {
+            const updatedStoryboard = storyboard.filter((_, i) => i !== index);
 
-        const updatedStoryboard = storyboard.filter((_, i) => i !== index);
+            // Renumber the remaining cuts
+            const renumberedStoryboard = updatedStoryboard.map((cut, i) => ({
+                ...cut,
+                cut: i + 1
+            }));
 
-        // Renumber the remaining cuts
-        const renumberedStoryboard = updatedStoryboard.map((cut, i) => ({
-            ...cut,
-            cut: i + 1
-        }));
-
-        setStoryboard(renumberedStoryboard);
-        setNumCuts(renumberedStoryboard.length);
+            setStoryboard(renumberedStoryboard);
+            setNumCuts(renumberedStoryboard.length);
+            setConfirmDialog(null);
+        });
     };
 
     const dataURLtoFile = (dataurl: string, filename: string): File => {
@@ -1147,10 +1179,10 @@ Cut總數: ${numCuts}
                                 </button>
                                 <button
                                     className="btn btn-merge"
-                                    onClick={mergeVideos}
+                                    onClick={() => mergeVideos(false)}
                                     disabled={isMergingVideos}
                                 >
-                                    {isMergingVideos ? 'Merging...' : 'Merge & Download Video'}
+                                    {isMergingVideos ? 'Merging...' : 'Re-merge Videos'}
                                 </button>
                             </>
                         )}
@@ -1167,6 +1199,31 @@ Cut總數: ${numCuts}
                             <p>{mergeProgress}</p>
                         </div>
                     )}
+
+                    {/* Merged Video Preview */}
+                    {mergedVideoUrl && !isMergingVideos && (
+                        <div className="merged-video-section">
+                            <div className="merged-video-header">
+                                <h2>Final Merged Video</h2>
+                                <button className="btn btn-primary" onClick={downloadMergedVideo}>
+                                    Download Video
+                                </button>
+                            </div>
+                            <div className="merged-video-container">
+                                <video
+                                    key={mergedVideoUrl}
+                                    controls
+                                    autoPlay
+                                    loop
+                                    className="merged-video-player"
+                                >
+                                    <source src={mergedVideoUrl} type="video/mp4" />
+                                    Your browser does not support the video tag.
+                                </video>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="storyboard-grid">
                         {storyboard.map((cut, index) => (
                             <div key={index} className={`cut-card`}>
@@ -1272,6 +1329,35 @@ Cut總數: ${numCuts}
                             >
                                 Merge All & Download
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Notification Toast */}
+            {notification && (
+                <div className={`notification-toast notification-${notification.type}`}>
+                    <div className="notification-content">
+                        <span className="notification-icon">
+                            {notification.type === 'success' && '✓'}
+                            {notification.type === 'error' && '✕'}
+                            {notification.type === 'info' && 'ℹ'}
+                        </span>
+                        <span className="notification-message">{notification.message}</span>
+                    </div>
+                    <button className="notification-close" onClick={() => setNotification(null)}>✕</button>
+                </div>
+            )}
+
+            {/* Confirm Dialog */}
+            {confirmDialog && (
+                <div className="modal-overlay" onClick={() => setConfirmDialog(null)}>
+                    <div className="modal-content confirm-dialog" onClick={(e) => e.stopPropagation()}>
+                        <h3>確認</h3>
+                        <p>{confirmDialog.message}</p>
+                        <div className="modal-actions">
+                            <button className="btn btn-primary" onClick={confirmDialog.onConfirm}>確認</button>
+                            <button className="btn btn-secondary" onClick={() => setConfirmDialog(null)}>取消</button>
                         </div>
                     </div>
                 </div>

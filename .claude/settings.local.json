@@ -10,7 +10,10 @@
       "Bash(where npm)",
       "Bash(npm --version)",
       "WebSearch",
-      "Bash(git add .)"
+      "Bash(git add .)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: AI Storyboard Generator with video generation\n\nFeatures:\n- Storyboard generation with Gemini API\n- Image generation for each cut\n- Video generation using ComfyUI\n- Video preview and merging with FFmpeg\n- Project save/load functionality\n- Drag and drop image upload\n- Aspect ratio selection (16:9, 9:16)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git add -A)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd in-app notifications and automatic video merging\n\nFeatures:\n- Replace browser alerts with elegant in-app notification toasts\n- Replace window.confirm with custom confirmation dialogs\n- Automatic video merging after all videos are generated\n- Embedded merged video preview with playback controls\n- Download button for merged video\n- Improved UI flow: storyboard -> video generation -> auto-merge -> preview\n\nUI Improvements:\n- Non-blocking notification system with auto-dismiss\n- Success/error/info notification types with animations\n- Custom confirm dialog with better UX\n- Merged video section with highlighted border\n- Better visual feedback throughout the process\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []
