@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run build)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(cmd /c start.bat)",
+      "Bash(where node)",
+      "Bash(node --version)",
+      "Bash(where npm)",
+      "Bash(npm --version)",
+      "WebSearch",
+      "Bash(git add .)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
