@@ -235,17 +235,35 @@ const App = () => {
     };
 
     // Generate video using ComfyUI
-    const generateVideoWithComfyUI = async (startImage: string, endImage: string, videoPrompt: string): Promise<string> => {
+    const generateVideoWithComfyUI = async (startImage: string, endImage: string | null, videoPrompt: string): Promise<string> => {
         const workflow = await loadWorkflow();
 
-        // Upload images to ComfyUI
-        const startImageName = await uploadImageToComfyUI(startImage, `start_${Date.now()}.png`);
-        const endImageName = await uploadImageToComfyUI(endImage, `end_${Date.now()}.png`);
-
-        // Update workflow with our parameters
-        workflow[startFrameNode].inputs.image = startImageName;
-        workflow[endFrameNode].inputs.image = endImageName;
+        // Update prompt
         workflow[promptNode].inputs.text = videoPrompt;
+
+        // If endImage is provided, configure workflow for dual-image mode
+        if (endImage) {
+            // Dual-image mode: upload both images
+            const startImageName = await uploadImageToComfyUI(startImage, `start_${Date.now()}.png`);
+            const endImageName = await uploadImageToComfyUI(endImage, `end_${Date.now()}.png`);
+            workflow[startFrameNode].inputs.image = startImageName;
+            workflow[endFrameNode].inputs.image = endImageName;
+        } else {
+            // Single-image mode (last cut): only upload one image
+            // Note: endFrameNode (62) is used as start_image in node 67
+            const imageName = await uploadImageToComfyUI(startImage, `start_${Date.now()}.png`);
+            workflow[endFrameNode].inputs.image = imageName;
+
+            // Remove end_image connection and startFrameNode (like WanSE2.json)
+            const videoNode = '67'; // WanFirstLastFrameToVideo node
+            if (workflow[videoNode] && workflow[videoNode].inputs) {
+                delete workflow[videoNode].inputs.end_image;
+            }
+            // Remove startFrameNode (68) as it's not needed for single-image mode
+            if (workflow[startFrameNode]) {
+                delete workflow[startFrameNode];
+            }
+        }
 
         // Queue prompt
         const promptResponse = await fetch(`${comfyUIUrl}/prompt`, {
@@ -462,28 +480,40 @@ const App = () => {
         const generatedVideos: string[] = [];
 
         try {
-            // Generate videos for each pair of cuts (all transitions)
-            const numVideos = storyboard.length - 1; // Generate video for each transition
+            // Generate videos for each cut (including the last one)
+            const numVideos = storyboard.length; // Generate video for each cut
 
             console.log(`Starting video generation for ${numVideos} videos (${storyboard.length} cuts)...`);
 
             for (let i = 0; i < numVideos; i++) {
                 const currentCut = storyboard[i];
-                const nextCut = storyboard[i + 1];
+                const nextCut = i < storyboard.length - 1 ? storyboard[i + 1] : null;
+                const isLastCut = (i === storyboard.length - 1);
 
-                if (!currentCut.generated_image || !nextCut.generated_image) {
-                    throw new Error(`Cut ${i + 1} or Cut ${i + 2} images not generated yet`);
+                if (!currentCut.generated_image) {
+                    throw new Error(`Cut ${i + 1} image not generated yet`);
                 }
 
-                setVideoProgress(`Generating video ${i + 1} / ${numVideos}... (Cut${i + 1} -> Cut${i + 2})`);
-                console.log(`\n=== Video ${i + 1} / ${numVideos} ===`);
-                console.log(`Start: Cut ${i + 1}, End: Cut ${i + 2}`);
-                console.log(`Prompt: ${currentCut.video_prompt.substring(0, 100)}...`);
+                if (!isLastCut && !nextCut?.generated_image) {
+                    throw new Error(`Cut ${i + 2} image not generated yet`);
+                }
+
+                if (isLastCut) {
+                    setVideoProgress(`Generating video ${i + 1} / ${numVideos}... (Cut${i + 1} ending)`);
+                    console.log(`\n=== Video ${i + 1} / ${numVideos} ===`);
+                    console.log(`Last Cut: Cut ${i + 1} (single-image mode)`);
+                    console.log(`Prompt: ${currentCut.video_prompt.substring(0, 100)}...`);
+                } else {
+                    setVideoProgress(`Generating video ${i + 1} / ${numVideos}... (Cut${i + 1} -> Cut${i + 2})`);
+                    console.log(`\n=== Video ${i + 1} / ${numVideos} ===`);
+                    console.log(`Start: Cut ${i + 1}, End: Cut ${i + 2}`);
+                    console.log(`Prompt: ${currentCut.video_prompt.substring(0, 100)}...`);
+                }
 
                 try {
                     const videoUrl = await generateVideoWithComfyUI(
                         currentCut.generated_image,
-                        nextCut.generated_image,
+                        nextCut?.generated_image || null,
                         currentCut.video_prompt
                     );
 
