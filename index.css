@@ -518,6 +518,23 @@ textarea {
   background-color: #d35400;
 }
 
+.btn-regenerate {
+  background-color: #3498db;
+  color: white;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.btn-regenerate:hover:not(:disabled) {
+  background-color: #2980b9;
+}
+
+.video-actions {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
 .btn-close {
   background-color: transparent;
   color: var(--text-color);
@@ -806,5 +823,185 @@ textarea {
 
   .merged-video-player {
     max-height: 400px;
+  }
+}
+
+/* Batch Regenerate Controls */
+.batch-regenerate-controls {
+  background-color: var(--surface-color);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.selection-info {
+  color: var(--text-color);
+  font-weight: 600;
+  font-size: 1rem;
+  min-width: 120px;
+}
+
+.batch-buttons {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.btn-regenerate-batch {
+  background-color: #e74c3c;
+  color: white;
+  padding: 0.75rem 1.5rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.btn-regenerate-batch:hover:not(:disabled) {
+  background-color: #c0392b;
+}
+
+/* Video Selection in Cut Cards */
+.cut-card.selected {
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.3);
+}
+
+.cut-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.video-select-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  padding: 0.35rem 0.75rem;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  transition: background-color 0.2s, border-color 0.2s;
+  user-select: none;
+}
+
+.video-select-label:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-color: var(--primary-color);
+}
+
+.video-select-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--primary-color);
+}
+
+.video-select-checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.checkbox-text {
+  color: var(--text-color);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+@media (max-width: 768px) {
+  .batch-regenerate-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .selection-info {
+    text-align: center;
+    width: 100%;
+  }
+
+  .batch-buttons {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .batch-buttons .btn {
+    flex: 1 1 auto;
+  }
+
+  .btn-regenerate-batch {
+    width: 100%;
+  }
+}
+
+/* Image Container and Overlay for Replace Image Button */
+.image-container {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+
+.image-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent 40%, transparent 60%, rgba(0, 0, 0, 0.7));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.image-container:hover .image-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.btn-replace-image {
+  background-color: rgba(0, 123, 255, 0.9);
+  color: white;
+  border: 2px solid white;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(8px);
+  white-space: nowrap;
+}
+
+.btn-replace-image:hover {
+  background-color: rgba(0, 91, 187, 0.95);
+  transform: scale(1.05);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.btn-replace-image:active {
+  transform: scale(0.98);
+}
+
+@media (max-width: 768px) {
+  .image-overlay {
+    opacity: 1;
+    background: linear-gradient(to bottom, transparent, transparent 70%, rgba(0, 0, 0, 0.8));
+    align-items: flex-end;
+    padding-bottom: 1rem;
+    pointer-events: auto;
+  }
+
+  .btn-replace-image {
+    font-size: 0.9rem;
+    padding: 0.6rem 1.2rem;
   }
 }
