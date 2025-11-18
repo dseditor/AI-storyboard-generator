@@ -45,7 +45,6 @@ const App = () => {
     const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
     const [videoVersions, setVideoVersions] = useState<number[]>([]); // Track video versions for force re-render
     const [selectedVideos, setSelectedVideos] = useState<Set<number>>(new Set()); // Track selected videos for batch regeneration
-    const [isRegeneratingSelected, setIsRegeneratingSelected] = useState(false); // Track batch regeneration state
 
     // Video prompt edit modal state
     const [showVideoPromptEdit, setShowVideoPromptEdit] = useState(false);
@@ -71,6 +70,10 @@ const App = () => {
         const saved = localStorage.getItem('savedPresets');
         return saved ? JSON.parse(saved) : [];
     });
+
+    // Cut detail modal state
+    const [showCutDetail, setShowCutDetail] = useState(false);
+    const [detailCutIndex, setDetailCutIndex] = useState<number | null>(null);
 
     const uploadAreaRef = useRef<HTMLDivElement>(null);
     const ffmpegRef = useRef(new FFmpeg());
@@ -346,134 +349,6 @@ const App = () => {
         setSelectedVideos(new Set());
     };
 
-    // Regenerate selected videos in order
-    const handleRegenerateSelected = async () => {
-        if (selectedVideos.size === 0) {
-            showNotification('請先選擇要重新生成的影片', 'info');
-            return;
-        }
-
-        setIsRegeneratingSelected(true);
-        setError('');
-
-        // Sort selected indices by cut order
-        const sortedIndices = Array.from(selectedVideos).sort((a, b) => a - b);
-
-        try {
-            console.log(`\n=== Batch Regenerating ${sortedIndices.length} Videos ===`);
-            console.log(`Selected indices: ${sortedIndices.join(', ')}`);
-
-            for (let i = 0; i < sortedIndices.length; i++) {
-                const index = sortedIndices[i];
-                const currentCut = storyboard[index];
-                const nextCut = index < storyboard.length - 1 ? storyboard[index + 1] : null;
-                const isLastCut = (index === storyboard.length - 1);
-
-                setVideoProgress(`重新生成影片 ${i + 1} / ${sortedIndices.length}... (Cut ${index + 1})`);
-                setRegeneratingIndex(index);
-
-                if (!currentCut.generated_image) {
-                    console.warn(`Skipping Cut ${index + 1}: image not generated`);
-                    continue;
-                }
-
-                if (!isLastCut && !nextCut?.generated_image) {
-                    console.warn(`Skipping Cut ${index + 1}: next cut image not generated`);
-                    continue;
-                }
-
-                try {
-                    console.log(`\n=== Regenerating Video ${i + 1} / ${sortedIndices.length} (Cut ${index + 1}) ===`);
-                    if (isLastCut) {
-                        console.log(`Last Cut: Cut ${index + 1} (single-image mode)`);
-                    } else {
-                        console.log(`Start: Cut ${index + 1}, End: Cut ${index + 2}`);
-                    }
-                    console.log(`Prompt: ${currentCut.video_prompt.substring(0, 100)}...`);
-
-                    // Generate video
-                    const videoUrl = await generateVideoWithComfyUI(
-                        currentCut.generated_image,
-                        nextCut?.generated_image || null,
-                        currentCut.video_prompt
-                    );
-
-                    console.log(`✓ Video ${index + 1} regenerated: ${videoUrl}`);
-
-                    // Create new blob URL
-                    const blob = await downloadVideoFromURL(videoUrl);
-                    const blobUrl = URL.createObjectURL(blob);
-
-                    // Get the old blob URL before updating (outside of setter to avoid closure issues)
-                    const oldBlobUrl = videoBlobUrls[index];
-
-                    // Update all states
-                    setGeneratedVideos(prevVideos => {
-                        const updated = [...prevVideos];
-                        updated[index] = videoUrl;
-                        return updated;
-                    });
-
-                    setVideoBlobUrls(prevBlobUrls => {
-                        const updated = [...prevBlobUrls];
-                        updated[index] = blobUrl;
-                        return updated;
-                    });
-
-                    setVideoVersions(prevVersions => {
-                        const updated = [...prevVersions];
-                        updated[index] = (updated[index] || 1) + 1;
-                        return updated;
-                    });
-
-                    // Revoke old blob URL after a delay to allow React to re-render
-                    // This prevents ERR_FILE_NOT_FOUND when the video element is still using the old URL
-                    if (oldBlobUrl && oldBlobUrl.startsWith('blob:')) {
-                        setTimeout(() => {
-                            try {
-                                URL.revokeObjectURL(oldBlobUrl);
-                                console.log(`✓ Revoked old blob URL for video ${index + 1}`);
-                            } catch (e) {
-                                console.warn(`Failed to revoke blob URL for video ${index + 1}:`, e);
-                            }
-                        }, 2000); // Delay 2 seconds to ensure React has updated the video element
-                    }
-
-                    // Small delay between videos to ensure ComfyUI is ready
-                    if (i < sortedIndices.length - 1) {
-                        console.log('Waiting 3 seconds before next video...');
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                    }
-
-                } catch (videoError: any) {
-                    console.error(`✗ Video ${index + 1} regeneration failed:`, videoError);
-                    showNotification(`影片 ${index + 1} 重新生成失敗：${videoError.message}`, 'error');
-                    // Continue with next video even if one fails
-                }
-            }
-
-            showNotification(`成功重新生成 ${sortedIndices.length} 個影片！`, 'success');
-
-            // Clear selection after successful regeneration
-            setSelectedVideos(new Set());
-
-            // Auto-merge videos after regeneration
-            setTimeout(() => {
-                setGeneratedVideos(currentVideos => {
-                    mergeVideos(true, currentVideos);
-                    return currentVideos;
-                });
-            }, 1000);
-
-        } catch (e: any) {
-            console.error('Batch regeneration error:', e);
-            setError(`批量重新生成失敗：${e.message}`);
-        } finally {
-            setIsRegeneratingSelected(false);
-            setRegeneratingIndex(null);
-            setVideoProgress('');
-        }
-    };
 
     // Open video prompt edit modal
     const openVideoPromptEdit = (index: number) => {
@@ -689,7 +564,7 @@ const App = () => {
     const waitForCompletion = async (promptId: string): Promise<string> => {
         return new Promise((resolve, reject) => {
             let attempts = 0;
-            const maxAttempts = 300; // 10 minutes at 2 second intervals
+            const maxAttempts = 1800; // 60 minutes at 2 second intervals (suitable for long videos)
             let hasSeenInQueue = false;
 
             const checkInterval = setInterval(async () => {
@@ -698,7 +573,7 @@ const App = () => {
 
                     if (attempts > maxAttempts) {
                         clearInterval(checkInterval);
-                        reject(new Error('Video generation timeout (10 minutes)'));
+                        reject(new Error('影片生成超时（60分钟）- 请检查ComfyUI是否正常运行'));
                         return;
                     }
 
@@ -848,7 +723,7 @@ const App = () => {
     };
 
     // Handle batch video generation
-    const handleGenerateVideos = async () => {
+    const handleGenerateVideos = async (mode: 'missing' | 'all' | 'selected' = 'missing') => {
         if (!storyboard || storyboard.length < 2) {
             setError('At least 2 cuts are required to generate videos');
             return;
@@ -859,47 +734,88 @@ const App = () => {
             return;
         }
 
+        // For 'selected' mode, check if any videos are selected
+        if (mode === 'selected' && selectedVideos.size === 0) {
+            showNotification('請先選擇要重新生成的影片', 'info');
+            return;
+        }
+
         setIsGeneratingVideo(true);
         setError('');
 
-        // Clean up old blob URLs before generating new ones
-        videoBlobUrls.forEach(url => {
-            if (url.startsWith('blob:')) {
-                URL.revokeObjectURL(url);
-            }
-        });
-        setVideoBlobUrls([]);
-        setVideoVersions([]);
+        // Determine which videos to generate based on mode
+        let indicesToGenerate: number[] = [];
 
-        const generatedVideos: string[] = [];
+        if (mode === 'all') {
+            // Generate all videos
+            indicesToGenerate = Array.from({ length: storyboard.length }, (_, i) => i);
+            console.log('Mode: 全部重新生成 - Regenerating all videos');
+        } else if (mode === 'missing') {
+            // Only generate videos that don't exist yet
+            indicesToGenerate = storyboard
+                .map((_, i) => i)
+                .filter(i => !videoBlobUrls[i] || videoBlobUrls[i] === '');
+            console.log(`Mode: 僅生成無影片 - Generating ${indicesToGenerate.length} missing videos`);
+        } else if (mode === 'selected') {
+            // Generate only selected videos
+            indicesToGenerate = Array.from(selectedVideos).sort((a, b) => a - b);
+            console.log(`Mode: 重新生成選中 - Regenerating ${indicesToGenerate.length} selected videos`);
+        }
+
+        if (indicesToGenerate.length === 0) {
+            showNotification('沒有需要生成的影片', 'info');
+            setIsGeneratingVideo(false);
+            return;
+        }
+
+        // For 'all' mode, clean up old blob URLs
+        if (mode === 'all') {
+            videoBlobUrls.forEach(url => {
+                if (url.startsWith('blob:')) {
+                    URL.revokeObjectURL(url);
+                }
+            });
+            setVideoBlobUrls([]);
+            setVideoVersions([]);
+        }
+
+        // Keep track of existing videos for modes that don't regenerate everything
+        const preservedVideoBlobUrls = mode === 'all' ? Array(storyboard.length).fill('') : [...videoBlobUrls];
+        const preservedVideoVersions = mode === 'all' ? Array(storyboard.length).fill(0) : [...videoVersions];
+        const currentGeneratedVideos: string[] = mode === 'all' ? Array(storyboard.length).fill('') : [...generatedVideos];
+        const failedVideos: Array<{index: number, error: string}> = [];
 
         try {
-            // Generate videos for each cut (including the last one)
-            const numVideos = storyboard.length; // Generate video for each cut
+            console.log(`Starting video generation for ${indicesToGenerate.length} videos...`);
 
-            console.log(`Starting video generation for ${numVideos} videos (${storyboard.length} cuts)...`);
-
-            for (let i = 0; i < numVideos; i++) {
+            for (let idx = 0; idx < indicesToGenerate.length; idx++) {
+                const i = indicesToGenerate[idx];
                 const currentCut = storyboard[i];
                 const nextCut = i < storyboard.length - 1 ? storyboard[i + 1] : null;
                 const isLastCut = (i === storyboard.length - 1);
 
                 if (!currentCut.generated_image) {
-                    throw new Error(`Cut ${i + 1} image not generated yet`);
+                    const error = `Cut ${i + 1} image not generated yet`;
+                    console.error(`✗ Video ${i + 1} failed:`, error);
+                    failedVideos.push({index: i + 1, error});
+                    continue; // Continue to next video
                 }
 
                 if (!isLastCut && !nextCut?.generated_image) {
-                    throw new Error(`Cut ${i + 2} image not generated yet`);
+                    const error = `Cut ${i + 2} image not generated yet`;
+                    console.error(`✗ Video ${i + 1} failed:`, error);
+                    failedVideos.push({index: i + 1, error});
+                    continue; // Continue to next video
                 }
 
                 if (isLastCut) {
-                    setVideoProgress(`Generating video ${i + 1} / ${numVideos}... (Cut${i + 1} ending)`);
-                    console.log(`\n=== Video ${i + 1} / ${numVideos} ===`);
+                    setVideoProgress(`Generating video ${idx + 1} / ${indicesToGenerate.length}... (Cut${i + 1} ending)`);
+                    console.log(`\n=== Video ${idx + 1} / ${indicesToGenerate.length} ===`);
                     console.log(`Last Cut: Cut ${i + 1} (single-image mode)`);
                     console.log(`Prompt: ${currentCut.video_prompt.substring(0, 100)}...`);
                 } else {
-                    setVideoProgress(`Generating video ${i + 1} / ${numVideos}... (Cut${i + 1} -> Cut${i + 2})`);
-                    console.log(`\n=== Video ${i + 1} / ${numVideos} ===`);
+                    setVideoProgress(`Generating video ${idx + 1} / ${indicesToGenerate.length}... (Cut${i + 1} -> Cut${i + 2})`);
+                    console.log(`\n=== Video ${idx + 1} / ${indicesToGenerate.length} ===`);
                     console.log(`Start: Cut ${i + 1}, End: Cut ${i + 2}`);
                     console.log(`Prompt: ${currentCut.video_prompt.substring(0, 100)}...`);
                 }
@@ -911,55 +827,91 @@ const App = () => {
                         currentCut.video_prompt
                     );
 
-                    generatedVideos.push(videoUrl);
+                    // Clean up old blob URL if it exists
+                    const oldBlobUrl = preservedVideoBlobUrls[i];
+                    if (oldBlobUrl && oldBlobUrl.startsWith('blob:')) {
+                        URL.revokeObjectURL(oldBlobUrl);
+                    }
+
                     console.log(`✓ Video ${i + 1} completed: ${videoUrl}`);
                     setVideoProgress(`Video ${i + 1} completed successfully!`);
 
+                    // Download and create blob URL
+                    const blob = await downloadVideoFromURL(videoUrl);
+                    const blobUrl = URL.createObjectURL(blob);
+
+                    // Update the video at the correct index (unified for all modes)
+                    currentGeneratedVideos[i] = videoUrl;
+                    preservedVideoBlobUrls[i] = blobUrl;
+                    preservedVideoVersions[i] = (preservedVideoVersions[i] || 0) + 1;
+
                     // Small delay between videos to ensure ComfyUI is ready
-                    if (i < numVideos - 1) {
+                    if (idx < indicesToGenerate.length - 1) {
                         console.log('Waiting 3 seconds before next video...');
                         await new Promise(resolve => setTimeout(resolve, 3000));
                     }
 
                 } catch (videoError: any) {
                     console.error(`✗ Video ${i + 1} failed:`, videoError);
-                    throw new Error(`Video ${i + 1} generation failed: ${videoError.message}`);
+                    failedVideos.push({index: i + 1, error: videoError.message});
+                    setVideoProgress(`Video ${i + 1} failed, continuing to next...`);
+
+                    // Continue to next video even if this one failed
+                    if (idx < indicesToGenerate.length - 1) {
+                        console.log('Waiting 3 seconds before next video...');
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    }
                 }
             }
 
-            const successMessage = `All videos generated successfully! Generated ${generatedVideos.length} videos.`;
-            console.log('\n' + successMessage);
-            setVideoProgress(`All ${generatedVideos.length} videos completed!`);
+            // Calculate success/failure statistics
+            const failureCount = failedVideos.length;
+            const successCount = indicesToGenerate.length - failureCount;
 
-            // Save video URLs to state
-            setGeneratedVideos(generatedVideos);
+            let message: string;
+            let messageType: 'success' | 'error' | 'info';
 
-            // Convert ComfyUI URLs to blob URLs for preview (to avoid CORS issues)
-            setVideoProgress('創建預覽連結...');
-            const blobUrls: string[] = [];
-            for (let i = 0; i < generatedVideos.length; i++) {
-                try {
-                    const blob = await downloadVideoFromURL(generatedVideos[i]);
-                    const blobUrl = URL.createObjectURL(blob);
-                    blobUrls.push(blobUrl);
-                } catch (e) {
-                    console.error(`Failed to create blob URL for video ${i + 1}:`, e);
-                    // Fallback to original URL if blob creation fails
-                    blobUrls.push(generatedVideos[i]);
-                }
+            if (failureCount === 0) {
+                message = `所有影片生成成功！共生成 ${successCount} 个影片。`;
+                messageType = 'success';
+            } else if (successCount === 0) {
+                message = `所有影片生成失败！共 ${failureCount} 个影片失败。`;
+                messageType = 'error';
+            } else {
+                message = `部分影片生成完成：成功 ${successCount} 个，失败 ${failureCount} 个。`;
+                messageType = 'info';
             }
-            setVideoBlobUrls(blobUrls);
 
-            // Initialize video versions
-            setVideoVersions(generatedVideos.map((_, i) => 1));
+            console.log('\n' + message);
+            if (failureCount > 0) {
+                console.log('失败的影片：');
+                failedVideos.forEach(({index, error}) => {
+                    console.log(`  - 影片 ${index}: ${error}`);
+                });
+            }
 
-            showNotification(successMessage, 'success');
+            setVideoProgress(message);
 
-            // Automatically merge videos after generation
-            // Pass the videos array directly to avoid state update delay
-            setTimeout(() => {
-                mergeVideos(true, generatedVideos);
-            }, 1000);
+            // Save video URLs and blob URLs to state (unified for all modes)
+            setGeneratedVideos(currentGeneratedVideos);
+            setVideoBlobUrls(preservedVideoBlobUrls);
+            setVideoVersions(preservedVideoVersions);
+
+            showNotification(message, messageType);
+
+            // Show detailed failure information if any videos failed
+            if (failureCount > 0) {
+                const failedList = failedVideos.map(({index, error}) => `影片 ${index}: ${error}`).join('\n');
+                setError(`以下影片生成失败：\n${failedList}`);
+            }
+
+            // Automatically merge only successful videos after generation
+            if (successCount > 0) {
+                const successfulVideos = currentGeneratedVideos.filter(url => url && url !== '');
+                setTimeout(() => {
+                    mergeVideos(true, successfulVideos);
+                }, 1000);
+            }
 
         } catch (e: any) {
             console.error('Video generation error:', e);
@@ -1208,6 +1160,26 @@ const App = () => {
         if (input) {
             input.click();
         }
+    };
+
+    // Open cut detail modal
+    const openCutDetail = (index: number) => {
+        setDetailCutIndex(index);
+        setShowCutDetail(true);
+    };
+
+    // Download image
+    const downloadImage = (index: number) => {
+        const cut = storyboard[index];
+        if (!cut.generated_image) return;
+
+        const link = document.createElement('a');
+        link.href = cut.generated_image;
+        link.download = `cut_${cut.cut}_image.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showNotification(`圖片 ${cut.cut} 下載成功！`, 'success');
     };
 
     const dataURLtoFile = (dataurl: string, filename: string): File => {
@@ -2198,14 +2170,39 @@ Cut總數: ${numCuts}
                  <div className="result-section">
                     <div className="result-header">
                         <button className="btn" onClick={handleRegenerateImages} disabled={isLoading}>重新生成圖片</button>
-                        <button
-                            className="btn btn-success"
-                            onClick={handleGenerateVideos}
-                            disabled={isGeneratingVideo || storyboard.some(cut => !cut.generated_image)}
-                            title={storyboard.some(cut => !cut.generated_image) ? '請先生成所有圖片' : '生成影片'}
-                        >
-                            {isGeneratingVideo ? '生成影片中...' : '生成影片'}
-                        </button>
+
+                        <div className="video-generation-controls">
+                            <button
+                                className="btn btn-success"
+                                onClick={() => handleGenerateVideos('missing')}
+                                disabled={isGeneratingVideo || storyboard.some(cut => !cut.generated_image)}
+                                title={storyboard.some(cut => !cut.generated_image) ? '請先生成所有圖片' : '僅生成沒有影片的Cut'}
+                            >
+                                {isGeneratingVideo ? '生成中...' : '🎬 生成影片（缺失）'}
+                            </button>
+
+                            {videoBlobUrls.some(url => url && url.length > 0) && (
+                                <button
+                                    className="btn btn-warning"
+                                    onClick={() => handleGenerateVideos('all')}
+                                    disabled={isGeneratingVideo || storyboard.some(cut => !cut.generated_image)}
+                                    title="重新生成所有Cut的影片"
+                                >
+                                    {isGeneratingVideo ? '生成中...' : '🔄 全部重新生成'}
+                                </button>
+                            )}
+
+                            {selectedVideos.size > 0 && (
+                                <button
+                                    className="btn btn-regenerate-batch"
+                                    onClick={() => handleGenerateVideos('selected')}
+                                    disabled={isGeneratingVideo || storyboard.some(cut => !cut.generated_image)}
+                                    title={`重新生成選中的 ${selectedVideos.size} 個影片`}
+                                >
+                                    {isGeneratingVideo ? '生成中...' : `⚡ 重新生成選中 (${selectedVideos.size})`}
+                                </button>
+                            )}
+                        </div>
                         {videoBlobUrls.length > 0 && (
                             <>
                                 <button
@@ -2234,7 +2231,8 @@ Cut總數: ${numCuts}
                             </>
                         )}
                     </div>
-                    {videoBlobUrls.length > 0 && (
+
+                    {videoBlobUrls.some(url => url && url.length > 0) && (
                         <div className="batch-regenerate-controls">
                             <div className="selection-info">
                                 已選擇 {selectedVideos.size} 個影片
@@ -2243,34 +2241,22 @@ Cut總數: ${numCuts}
                                 <button
                                     className="btn btn-secondary"
                                     onClick={selectAllVideos}
-                                    disabled={isRegeneratingSelected || isGeneratingVideo}
+                                    disabled={isGeneratingVideo}
                                 >
                                     全選
                                 </button>
                                 <button
                                     className="btn btn-secondary"
                                     onClick={deselectAllVideos}
-                                    disabled={isRegeneratingSelected || isGeneratingVideo || selectedVideos.size === 0}
+                                    disabled={isGeneratingVideo || selectedVideos.size === 0}
                                 >
                                     取消全選
-                                </button>
-                                <button
-                                    className="btn btn-regenerate-batch"
-                                    onClick={handleRegenerateSelected}
-                                    disabled={isRegeneratingSelected || isGeneratingVideo || selectedVideos.size === 0}
-                                >
-                                    {isRegeneratingSelected ? '⟳ 重新生成中...' : `🎬 重新生成選中影片 (${selectedVideos.size})`}
                                 </button>
                             </div>
                         </div>
                     )}
+
                     {isGeneratingVideo && (
-                        <div className="video-progress">
-                            <div className="spinner"></div>
-                            <p>{videoProgress}</p>
-                        </div>
-                    )}
-                    {isRegeneratingSelected && (
                         <div className="video-progress">
                             <div className="spinner"></div>
                             <p>{videoProgress}</p>
@@ -2309,7 +2295,7 @@ Cut總數: ${numCuts}
 
                     <div className="storyboard-grid">
                         {storyboard.map((cut, index) => (
-                            <div key={index} className={`cut-card ${selectedVideos.has(index) ? 'selected' : ''}`}>
+                            <div key={index} className={`cut-card-compact ${selectedVideos.has(index) ? 'selected' : ''}`}>
                                 <div className="cut-header">
                                     <h3>Cut #{cut.cut}</h3>
                                     <div className="cut-header-actions">
@@ -2319,15 +2305,17 @@ Cut總數: ${numCuts}
                                                     type="checkbox"
                                                     checked={selectedVideos.has(index)}
                                                     onChange={() => toggleVideoSelection(index)}
-                                                    disabled={isRegeneratingSelected || isGeneratingVideo}
+                                                    disabled={isGeneratingVideo}
                                                     className="video-select-checkbox"
                                                 />
-                                                <span className="checkbox-text">選擇</span>
                                             </label>
                                         )}
                                         <button
                                             className="btn btn-delete"
-                                            onClick={() => handleRemoveCut(index)}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleRemoveCut(index);
+                                            }}
                                             title="刪除此鏡頭"
                                             disabled={storyboard.length <= 1}
                                         >
@@ -2335,7 +2323,11 @@ Cut總數: ${numCuts}
                                         </button>
                                     </div>
                                 </div>
-                                <div className="image-container">
+                                <div
+                                    className="image-container-clickable"
+                                    onClick={() => cut.generated_image && openCutDetail(index)}
+                                    style={{ cursor: cut.generated_image ? 'pointer' : 'default' }}
+                                >
                                     {cut.generated_image ?
                                         <img
                                             src={cut.generated_image}
@@ -2347,64 +2339,191 @@ Cut總數: ${numCuts}
                                         </div>
                                     }
                                     {cut.generated_image && (
-                                        <div className="image-overlay">
-                                            <button
-                                                className="btn btn-replace-image"
-                                                onClick={() => triggerImageReplace(index)}
-                                                title="更換此圖片"
-                                            >
-                                                🖼️ 更換圖片
-                                            </button>
-                                            <input
-                                                type="file"
-                                                id={`replace-image-input-${index}`}
-                                                accept="image/*"
-                                                style={{ display: 'none' }}
-                                                onChange={(e) => {
-                                                    const file = e.target.files?.[0];
-                                                    if (file) {
-                                                        handleReplaceImage(index, file);
-                                                    }
-                                                    e.target.value = ''; // Reset input to allow selecting same file again
-                                                }}
-                                            />
+                                        <div className="image-click-hint">
+                                            <span>🔍 點擊查看詳情</span>
                                         </div>
                                     )}
                                 </div>
-                                <div className="prompt-area">
-                                    <label>圖片提示詞 (可編輯)</label>
+                                {videoBlobUrls[index] && (
+                                    <div className="video-status-badge">
+                                        ✓ 已生成影片
+                                    </div>
+                                )}
+                                <input
+                                    type="file"
+                                    id={`replace-image-input-${index}`}
+                                    accept="image/*"
+                                    style={{ display: 'none' }}
+                                    onChange={(e) => {
+                                        const file = e.target.files?.[0];
+                                        if (file) {
+                                            handleReplaceImage(index, file);
+                                        }
+                                        e.target.value = '';
+                                    }}
+                                />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Cut Detail Modal */}
+            {showCutDetail && detailCutIndex !== null && storyboard[detailCutIndex] && (
+                <div className="modal-overlay" onClick={() => setShowCutDetail(false)}>
+                    <div className="modal-content cut-detail-modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="cut-detail-header">
+                            <h2>Cut #{storyboard[detailCutIndex].cut} 詳細資訊</h2>
+                            <button className="btn btn-close" onClick={() => setShowCutDetail(false)}>✕</button>
+                        </div>
+                        <div className="cut-detail-content">
+                            {/* Left: Image */}
+                            <div className="cut-detail-left">
+                                <div className="detail-image-container">
+                                    <img
+                                        src={storyboard[detailCutIndex].generated_image}
+                                        alt={`Cut ${storyboard[detailCutIndex].cut}`}
+                                        style={{ aspectRatio: aspectRatio.replace(':', ' / ')}}
+                                    />
+                                </div>
+                                <div className="image-actions">
+                                    <button
+                                        className="btn btn-secondary"
+                                        onClick={() => triggerImageReplace(detailCutIndex)}
+                                        title="更換圖片"
+                                    >
+                                        🖼️ 更換圖片
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary"
+                                        onClick={() => downloadImage(detailCutIndex)}
+                                        title="下載圖片"
+                                    >
+                                        💾 下載圖片
+                                    </button>
+                                </div>
+                                <div className="prompt-section">
+                                    <label>圖片提示詞</label>
                                     <textarea
-                                        className="prompt-text editable"
-                                        value={cut.image_prompt}
-                                        onChange={(e) => handleImagePromptChange(index, e.target.value)}
-                                        rows={4}
+                                        className="prompt-text"
+                                        value={storyboard[detailCutIndex].image_prompt}
+                                        onChange={(e) => handleImagePromptChange(detailCutIndex, e.target.value)}
+                                        rows={6}
                                         placeholder="請輸入圖片生成的詳細描述..."
                                     />
                                 </div>
-                                <div className="prompt-area">
-                                    <label>影片提示詞 (可編輯)</label>
+                            </div>
+
+                            {/* Right: Video */}
+                            <div className="cut-detail-right">
+                                <div className="detail-video-container">
+                                    {videoBlobUrls[detailCutIndex] && videoBlobUrls[detailCutIndex].startsWith('blob:') ? (
+                                        <video
+                                            key={`${videoBlobUrls[detailCutIndex]}-v${videoVersions[detailCutIndex] || 1}`}
+                                            controls
+                                            loop
+                                            className="detail-video"
+                                            src={videoBlobUrls[detailCutIndex]}
+                                            onError={async (e) => {
+                                                console.error(`Video error for cut ${detailCutIndex}:`, e);
+                                                try {
+                                                    const blob = await downloadVideoFromURL(generatedVideos[detailCutIndex]);
+                                                    const newBlobUrl = URL.createObjectURL(blob);
+                                                    setVideoBlobUrls(prevBlobUrls => {
+                                                        const updated = [...prevBlobUrls];
+                                                        if (updated[detailCutIndex]?.startsWith('blob:')) {
+                                                            try { URL.revokeObjectURL(updated[detailCutIndex]); } catch (err) {}
+                                                        }
+                                                        updated[detailCutIndex] = newBlobUrl;
+                                                        return updated;
+                                                    });
+                                                    setVideoVersions(prevVersions => {
+                                                        const updated = [...prevVersions];
+                                                        updated[detailCutIndex] = (updated[detailCutIndex] || 0) + 1;
+                                                        return updated;
+                                                    });
+                                                } catch (err) {
+                                                    console.error('Failed to recreate blob URL:', err);
+                                                }
+                                            }}
+                                        >
+                                            Your browser does not support the video tag.
+                                        </video>
+                                    ) : generatedVideos[detailCutIndex] ? (
+                                        <div style={{padding: '20px', textAlign: 'center', color: '#888'}}>
+                                            <p>影片需要載入</p>
+                                            <button
+                                                className="btn btn-primary"
+                                                onClick={async () => {
+                                                    try {
+                                                        setIsLoading(true);
+                                                        const blob = await downloadVideoFromURL(generatedVideos[detailCutIndex]);
+                                                        const newBlobUrl = URL.createObjectURL(blob);
+                                                        setVideoBlobUrls(prevBlobUrls => {
+                                                            const updated = [...prevBlobUrls];
+                                                            updated[detailCutIndex] = newBlobUrl;
+                                                            return updated;
+                                                        });
+                                                        setVideoVersions(prevVersions => {
+                                                            const updated = [...prevVersions];
+                                                            updated[detailCutIndex] = (updated[detailCutIndex] || 0) + 1;
+                                                            return updated;
+                                                        });
+                                                        showNotification('影片載入成功', 'success');
+                                                    } catch (err: any) {
+                                                        showNotification(`載入失敗：${err.message}`, 'error');
+                                                    } finally {
+                                                        setIsLoading(false);
+                                                    }
+                                                }}
+                                            >
+                                                點擊載入影片
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className="no-video-placeholder">
+                                            <p>尚未生成影片</p>
+                                            <p style={{fontSize: '0.9em', color: '#888'}}>請先點擊「生成影片」按鈕</p>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="prompt-section">
+                                    <label>影片提示詞</label>
                                     <textarea
-                                        className="prompt-text editable"
-                                        value={cut.video_prompt}
-                                        onChange={(e) => handleVideoPromptChange(index, e.target.value)}
-                                        rows={4}
+                                        className="prompt-text"
+                                        value={storyboard[detailCutIndex].video_prompt}
+                                        onChange={(e) => handleVideoPromptChange(detailCutIndex, e.target.value)}
+                                        rows={6}
                                         placeholder="請輸入影片生成的詳細描述..."
                                     />
                                 </div>
-                                {videoBlobUrls[index] && (
-                                    <div className="video-actions">
+                                {generatedVideos[detailCutIndex] && (
+                                    <div className="video-detail-actions">
                                         <button
                                             className="btn btn-regenerate"
-                                            onClick={() => openVideoPromptEdit(index)}
-                                            disabled={regeneratingIndex === index || isGeneratingVideo}
-                                            title="編輯提示詞並重新生成此影片"
+                                            onClick={async () => {
+                                                const newPrompt = storyboard[detailCutIndex].video_prompt;
+                                                setShowCutDetail(false);
+                                                await regenerateSingleVideo(detailCutIndex, newPrompt);
+                                            }}
+                                            disabled={regeneratingIndex === detailCutIndex || isGeneratingVideo}
+                                            title="使用當前提示詞重新生成影片"
                                         >
-                                            {regeneratingIndex === index ? '⟳ 重新生成中...' : '🎬 重新生成影片'}
+                                            {regeneratingIndex === detailCutIndex ? '⟳ 重新生成中...' : '🎬 重新生成影片'}
                                         </button>
+                                        <a
+                                            href={generatedVideos[detailCutIndex]}
+                                            download={`video_${storyboard[detailCutIndex].cut}.mp4`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="btn btn-primary"
+                                        >
+                                            💾 下載影片
+                                        </a>
                                     </div>
                                 )}
                             </div>
-                        ))}
+                        </div>
                     </div>
                 </div>
             )}
