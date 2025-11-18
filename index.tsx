@@ -16,6 +16,8 @@ const App = () => {
     const [aspectRatio, setAspectRatio] = useState('16:9');
     const [outline, setOutline] = useState('');
     const [numCuts, setNumCuts] = useState<number>(3);
+    const [generationMode, setGenerationMode] = useState('character_closeup'); // 'character_closeup', 'character_in_scene', 'object_closeup', 'storytelling_scene', 'animation', 'freestyle'
+    const [prioritizeFaceShots, setPrioritizeFaceShots] = useState(false);
 
     const [isLoading, setIsLoading] = useState(false);
     const [loadingMessage, setLoadingMessage] = useState('');
@@ -79,6 +81,15 @@ const App = () => {
     const ffmpegRef = useRef(new FFmpeg());
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.API_KEY! });
 
+    const outlinePlaceholders: { [key: string]: string } = {
+        character_closeup: '請描述角色的特寫鏡頭，專注於表情、情緒或與特定物件的互動。例如：「角色1 微笑著，陽光灑在她臉上，手中拿著 產品A。」',
+        character_in_scene: '請描述角色與環境的互動。例如：「角色1 敏捷地在充滿未來感的都市叢林中攀爬穿梭。」',
+        object_closeup: '請專注描述物件或產品的細節與質感。例如：「特寫展示 手錶 的精緻錶盤，光線流淌過金屬表面。」',
+        storytelling_scene: '請描述一個包含人、物、景的完整情境故事。例如：「在溫馨的咖啡館裡，角色1 專注地使用 筆記型電腦，窗外下著雨。」',
+        animation: '請使用您在下方設定的角色/物件名稱來描述故事。例如：「魔法少女 在星空下的城市中與 神秘敵人 戰鬥。」',
+        freestyle: '自由發揮您的創意，AI 將給予最大程度的創作詮釋。',
+    };
+
     // Show notification
     const showNotification = (message: string, type: 'success' | 'info' | 'error' = 'info') => {
         setNotification({ message, type });
@@ -88,6 +99,29 @@ const App = () => {
     // Show confirm dialog
     const showConfirm = (message: string, onConfirm: () => void) => {
         setConfirmDialog({ message, onConfirm });
+    };
+
+    // Invalidate adjacent video prompts when image changes
+    const invalidateAdjacentVideoPrompts = (indexToInvalidate: number, currentStoryboard: any[]) => {
+        const board = [...currentStoryboard];
+        const invalidationMessage = '相鄰圖片已變更，提示詞已失效。';
+
+        // Invalidate the prompt for the transition STARTING FROM the changed image
+        board[indexToInvalidate].video_prompt = invalidationMessage;
+
+        // Invalidate the prompt for the transition ENDING AT the changed image
+        // This means finding the first visible shot BEFORE this one.
+        let prevVisibleIndex = -1;
+        for (let i = indexToInvalidate - 1; i >= 0; i--) {
+            if (!board[i].isDeleted) {
+                prevVisibleIndex = i;
+                break;
+            }
+        }
+        if (prevVisibleIndex !== -1) {
+            board[prevVisibleIndex].video_prompt = invalidationMessage;
+        }
+        return board;
     };
 
     // Initialize FFmpeg
@@ -1749,6 +1783,100 @@ const App = () => {
         }
     };
 
+    // Handle extend and correct image (use previous cut as reference)
+    const handleExtendAndCorrectImage = async (index: number) => {
+        const previousCut = storyboard[index - 1];
+        if (!previousCut?.generated_image || !storyboard[index]) {
+            setError('無法延伸修正，缺少前一鏡頭的圖片或當前鏡頭的資訊。');
+            return;
+        }
+
+        setRegeneratingIndex(index);
+        setError('');
+
+        try {
+            let tempStoryboard = [...storyboard];
+            const promptData = tempStoryboard[index];
+
+            tempStoryboard[index].generated_image = '';
+            setStoryboard([...tempStoryboard]);
+
+            const previousImagePart = {
+                inlineData: {
+                    data: previousCut.generated_image.split(',')[1],
+                    mimeType: 'image/png',
+                }
+            };
+
+            let fullDataUrl = '';
+            let attempt = 1;
+
+            while (attempt <= 2) {
+                try {
+                    const imageResponse = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash-image',
+                        contents: { parts: [previousImagePart, { text: promptData.image_prompt }] },
+                        config: { responseModalities: [Modality.IMAGE] },
+                    });
+
+                    let generatedImageBase64 = '';
+                    const parts = imageResponse?.candidates?.[0]?.content?.parts;
+                    if (parts) {
+                        for (const part of parts) {
+                            if (part.inlineData) {
+                                generatedImageBase64 = part.inlineData.data;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!generatedImageBase64) {
+                        const feedback = imageResponse?.promptFeedback;
+                        const blockReason = feedback?.blockReason;
+                        if (blockReason === 'SAFETY' && attempt === 1) {
+                            console.warn(`延伸修正 #${index + 1} 因安全原因被阻擋。嘗試修正提示詞後重試...`);
+                            const sanitizationRequest = `以下圖片提示詞因安全原因被阻擋。請在保留原意的基礎上，將其改寫得更安全、更符合內容政策。原始提示詞： "${promptData.image_prompt}"`;
+                            const sanitizedResponse = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: sanitizationRequest });
+
+                            if (!sanitizedResponse.text) throw new Error('無法自動修正提示詞。');
+
+                            const sanitizedImagePrompt = sanitizedResponse.text.trim();
+                            tempStoryboard[index].image_prompt = sanitizedImagePrompt;
+
+                            attempt++;
+                            continue;
+                        }
+                        throw new Error(`API返回空圖片。原因: ${blockReason || '未知'}`);
+                    }
+
+                    fullDataUrl = `data:image/png;base64,${generatedImageBase64}`;
+                    break;
+
+                } catch (e: any) {
+                    if ((e.message.includes('429') || e.message.toLowerCase().includes('quota')) && attempt === 1) {
+                        setLoadingMessage(`API用量限制。等待1分鐘後重試...`);
+                        await new Promise(resolve => setTimeout(resolve, 60000));
+                        attempt++;
+                        continue;
+                    }
+                    throw e;
+                }
+            }
+
+            if (fullDataUrl) {
+                tempStoryboard[index].generated_image = fullDataUrl;
+                tempStoryboard = invalidateAdjacentVideoPrompts(index, tempStoryboard);
+                setStoryboard(tempStoryboard);
+            }
+
+        } catch (e: any) {
+            console.error(e);
+            setError(`鏡頭 #${index + 1} 延伸修正失敗: ${e.message}`);
+        } finally {
+            setRegeneratingIndex(null);
+        }
+    };
+
     const handleGenerate = async () => {
         if (!initialImage || !processedImage || !outline || numCuts <= 0) {
             setError('請確保已上傳圖片、填寫大綱並設定有效的 Cut 數量。');
@@ -1757,25 +1885,61 @@ const App = () => {
         setIsLoading(true);
         setError('');
         setStoryboard([]);
-        
-        try {
-            const baseImageForGeneration = processedImage;
-            setLoadingMessage('正在分析大綱並產生腳本...');
-            const jsonPrompt = `你是一個專業的電影導演和分鏡師。根據以下故事大綱和指定的cut數量，為每一cut產生一個JSON物件。
-每一cut的JSON物件都應包含 'image_prompt' 和 'video_prompt'。
 
-- 'image_prompt': 這是用來生成該cut靜態圖片的提示詞。風格要求為具有真實感的 "Raw photo"，請強調自然光影、細膩紋理與電影感。請專注於描述一個動作「正要開始」的瞬間，捕捉角色蓄勢待發的姿態或事件即將發生的緊張感。需要詳細描述場景、角色、構圖和氛圍，並參考初始圖片風格。
-- 'video_prompt': 這是用來生成該cut動態影片的提示詞。接續 'image_prompt' 的畫面，完整地演繹接下來發生的動作。描述影片的開始與結束畫面，並包含運鏡指示（如 pan, tilt, zoom in/out, dolly），確保影片能與前一cut和後一cut的內容流暢銜接。
+        try {
+            // --- PHASE 1: Generate Image Prompts Only ---
+            setLoadingMessage('階段 1/3: 正在分析大綱並產生圖片腳本...');
+
+            let imagePromptStyleInstruction = `風格要求為具有真實感的 "Raw photo"，請強調自然光影、細膩紋理與電影感。`;
+            let modeSpecificInstruction = '';
+
+            switch(generationMode) {
+                case 'character_closeup':
+                    modeSpecificInstruction = `**模式: 人物特寫** - 為每個鏡頭生成一個專注於角色臉部表情、情緒或與產品互動的特寫描述。請多使用「特寫」、「中景特寫」、「眼神專注於...」等攝影術語。`;
+                    break;
+                case 'character_in_scene':
+                    modeSpecificInstruction = `**模式: 人與場景** - 為每個鏡頭生成一個描述角色與環境互動的場景。請著重於角色的動作、姿態，以及場景的氛圍與光影，使用如「中景」、「遠景」、「角色正在攀爬...」等術語。`;
+                    break;
+                case 'object_closeup':
+                    modeSpecificInstruction = `**模式: 物件特寫** - 為每個鏡頭生成一個極致描繪物件或產品細節的描述。請專注於材質、光澤、紋理，使用如「微距鏡頭」、「細節特寫」、「光線掃過...」等術語。`;
+                    break;
+                case 'storytelling_scene':
+                    modeSpecificInstruction = `**模式: 情境故事** - 為每個鏡頭生成一個包含人、物、景的完整故事化場景描述。請說明角色在做什麼、物件扮演的角色，以及環境如何烘托氣氛。`;
+                    break;
+                case 'animation':
+                    imagePromptStyleInstruction = `風格要求為「高品質動畫風格 (High-quality anime style)」，請描述清晰的線條、鮮明的色彩、以及符合動畫美學的場景與角色動態。`;
+                    modeSpecificInstruction = `**模式: 動畫風格** - 確保所有描述都符合動畫的視覺語言與世界觀。`;
+                    break;
+                case 'freestyle':
+                    modeSpecificInstruction = `**模式: 無限制** - 你可以自由發揮，不受特定構圖或風格限制，創造最大膽、最有創意的畫面描述。`;
+                    break;
+            }
+
+            let facePriorityInstruction = '';
+            if (prioritizeFaceShots) {
+                facePriorityInstruction = `
+**臉部維持特別指令 (Face Priority Special Instruction):**
+為了維持低畫質模型的人物臉部一致性，所有包含角色的鏡頭都必須優先採用「特寫 (Close-up)」、「中景 (Medium shot)」或「中特寫 (Medium close-up)」。絕對避免使用會讓角色臉部變得過小而無法辨識的「遠景 (Long shot)」或「大遠景 (Extreme long shot)」。`;
+            }
+
+            const imagePromptsJsonPrompt = `你是一個專業的電影導演和分鏡師。根據以下故事大綱、模式和指定的鏡頭數量，為每一個鏡頭產生一個JSON物件。
+每一個鏡頭的JSON物件應只包含 'image_prompt'。
+
+- 'image_prompt': 這是用來生成該鏡頭靜態圖片的提示詞。${imagePromptStyleInstruction}請專注於描述一個動作「正要開始」的瞬間，捕捉角色蓄勢待發的姿態或事件即將發生的緊張感。需要詳細描述場景、角色、構圖和氛圍，並參考初始圖片風格。
+
+${modeSpecificInstruction}
+${facePriorityInstruction}
 
 故事大綱: "${outline}"
-Cut總數: ${numCuts}
+鏡頭總數: ${numCuts}
 長寬比: "${aspectRatio}"
 
+**語言:** 'image_prompt' 的內容必須使用繁體中文撰寫。
 請嚴格遵循JSON格式，輸出一個包含 ${numCuts} 個物件的JSON陣列。`;
-            
-            const response = await ai.models.generateContent({
+
+            const imagePromptsResponse = await ai.models.generateContent({
                 model: "gemini-2.5-flash",
-                contents: jsonPrompt,
+                contents: imagePromptsJsonPrompt,
                 config: {
                     responseMimeType: "application/json",
                     responseSchema: {
@@ -1784,71 +1948,164 @@ Cut總數: ${numCuts}
                             type: Type.OBJECT,
                             properties: {
                                 image_prompt: { type: Type.STRING },
-                                video_prompt: { type: Type.STRING },
                             },
-                            required: ["image_prompt", "video_prompt"]
+                            required: ["image_prompt"]
                         }
                     }
                 }
             });
 
-            const text = response.text;
+            const text = imagePromptsResponse.text;
             if (!text) {
-                const feedback = response?.promptFeedback;
+                const feedback = imagePromptsResponse?.promptFeedback;
                 const blockReason = feedback?.blockReason;
                 throw new Error(`API 未能生成有效的腳本。原因: ${blockReason || 'API 返回了空的回應'}`);
             }
-            const generatedPrompts = JSON.parse(text);
+            const generatedImagePrompts = JSON.parse(text);
 
-            if (!Array.isArray(generatedPrompts) || generatedPrompts.length === 0) {
+            if (!Array.isArray(generatedImagePrompts) || generatedImagePrompts.length === 0) {
                 throw new Error("API 未能生成有效的腳本，請調整大綱後再試。");
             }
 
-            const tempStoryboard: any[] = [];
+            let tempStoryboard: any[] = generatedImagePrompts.map((promptData, i) => ({
+                cut: i + 1,
+                image_prompt: promptData.image_prompt,
+                video_prompt: '待生成...',
+                generated_image: '',
+                isDeleted: false,
+            }));
+            setStoryboard([...tempStoryboard]);
+
+            // --- PHASE 2: Generate Images ---
             const initialImagePart = {
                 inlineData: {
-                    data: baseImageForGeneration.split(',')[1],
+                    data: processedImage.split(',')[1],
                     mimeType: 'image/png',
                 }
             };
 
-            for (let i = 0; i < generatedPrompts.length; i++) {
-                const promptData = generatedPrompts[i];
-                setLoadingMessage(`正在生成第 ${i + 1} / ${generatedPrompts.length} 張分鏡圖...`);
+            for (let i = 0; i < tempStoryboard.length; i++) {
+                setLoadingMessage(`階段 2/3: 正在生成第 ${i + 1} / ${tempStoryboard.length} 張分鏡圖...`);
 
-                const imageResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash-image',
-                    contents: { parts: [initialImagePart, { text: promptData.image_prompt }] },
-                    config: {
-                        responseModalities: [Modality.IMAGE],
-                    },
-                });
+                try {
+                    const imageResponse = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash-image',
+                        contents: { parts: [initialImagePart, { text: tempStoryboard[i].image_prompt }] },
+                        config: {
+                            responseModalities: [Modality.IMAGE],
+                        },
+                    });
 
-                let generatedImageBase64 = '';
-                const parts = imageResponse?.candidates?.[0]?.content?.parts;
-                if (parts) {
-                    for (const part of parts) {
-                        if (part.inlineData) {
-                            generatedImageBase64 = part.inlineData.data;
-                            break;
+                    let generatedImageBase64 = '';
+                    const parts = imageResponse?.candidates?.[0]?.content?.parts;
+                    if (parts) {
+                        for (const part of parts) {
+                            if (part.inlineData) {
+                                generatedImageBase64 = part.inlineData.data;
+                                break;
+                            }
                         }
                     }
+
+                    if (!generatedImageBase64) {
+                        const feedback = imageResponse?.promptFeedback;
+                        const blockReason = feedback?.blockReason;
+                        console.warn(`鏡頭 ${i + 1} 未能生成圖片。原因: ${blockReason || '未知錯誤'}`);
+                        tempStoryboard[i].generated_image = '';
+                    } else {
+                        tempStoryboard[i].generated_image = `data:image/png;base64,${generatedImageBase64}`;
+                    }
+
+                    setStoryboard([...tempStoryboard]);
+                } catch (e: any) {
+                    console.warn(`鏡頭 ${i + 1} 圖片生成失敗: ${e.message}`);
+                    tempStoryboard[i].generated_image = '';
+                }
+            }
+
+            // --- PHASE 3: Generate Video Prompts ---
+            setLoadingMessage('階段 3/3: 正在根據圖片生成過場提示詞...');
+
+            const videoModelConstraintInstruction = prioritizeFaceShots ? `
+**中低畫質模型特別指令 (Low-Quality Model Special Instruction):**
+1.  **簡化動態 (Simplified Dynamics):** 動作必須是單一、清晰且有力的。例如「一個迴旋踢」、「施放一個火球」、「向前衝刺」。絕對禁止描述多個連續動作或複雜的武打套路。
+2.  **明確運鏡 (Clear Camera Work):** 運鏡指令必須簡單直接。優先使用「緩慢推近 (slow push-in)」、「緩慢拉遠 (slow pull-out)」、「固定鏡頭 (static shot)」或「平穩的橫移 (smooth pan)」。避免快速、複雜或不穩定的攝影機運動。
+3.  **豐富畫面 (Rich Scenery):** 儘管動作和運鏡被簡化，但場景本身必須是豐富的。請詳細描述光影、環境效果（如風、煙霧、火花）和角色表情，以避免畫面看起來像靜態的幻燈片。
+` : '';
+
+            for (let i = 0; i < tempStoryboard.length; i++) {
+                if (!tempStoryboard[i].generated_image) {
+                    tempStoryboard[i].video_prompt = '圖片生成失敗，無法產生影片提示詞。';
+                    continue;
                 }
 
-                if (!generatedImageBase64) {
-                    const feedback = imageResponse?.promptFeedback;
-                    const blockReason = feedback?.blockReason;
-                    console.warn(`Cut ${i + 1} 未能生成圖片。原因: ${blockReason || '未知錯誤'}`);
+                setLoadingMessage(`階段 3/3: 正在生成第 ${i + 1} / ${tempStoryboard.length} 段影片提示詞...`);
+
+                try {
+                    const currentImagePart = {
+                        inlineData: {
+                            data: tempStoryboard[i].generated_image.split(',')[1],
+                            mimeType: 'image/png',
+                        }
+                    };
+
+                    const isLastCut = (i === tempStoryboard.length - 1);
+                    let nextImagePart = null;
+
+                    if (!isLastCut && tempStoryboard[i + 1]?.generated_image) {
+                        nextImagePart = {
+                            inlineData: {
+                                data: tempStoryboard[i + 1].generated_image.split(',')[1],
+                                mimeType: 'image/png',
+                            }
+                        };
+                    }
+
+                    const videoPromptRequest = isLastCut
+                        ? `你是一位專業的影片提示詞生成師。請觀察這張圖片，為它設計一個動態影片提示詞，讓畫面產生自然且豐富的變化。
+
+${videoModelConstraintInstruction}
+
+**要求:**
+- 這是最後一個鏡頭，請設計一個有力的結束動作或姿態。
+- 描述畫面中角色或物件的動態變化、表情演變，以及環境效果（如光影、風、粒子等）。
+- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭等）。
+- 使用繁體中文撰寫，保持簡潔有力。
+
+**輸出:** 只需輸出影片提示詞，不要添加任何解釋。`
+                        : `你是一位專業的影片提示詞生成師。請觀察這兩張連續的圖片，為它們之間的過渡設計一個動態影片提示詞。
+
+${videoModelConstraintInstruction}
+
+**要求:**
+- 描述從第一張圖片到第二張圖片的動態過渡過程。
+- 包含角色/物件的動作變化、表情演變，以及環境效果（如光影、風、粒子等）。
+- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭、平穩橫移等）。
+- 使用繁體中文撰寫，保持簡潔有力。
+
+**輸出:** 只需輸出影片提示詞，不要添加任何解釋。`;
+
+                    const parts: any[] = nextImagePart
+                        ? [currentImagePart, nextImagePart, { text: videoPromptRequest }]
+                        : [currentImagePart, { text: videoPromptRequest }];
+
+                    const videoResponse = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: { parts: parts },
+                    });
+
+                    const videoPrompt = videoResponse.text?.trim() || '影片提示詞生成失敗。';
+                    tempStoryboard[i].video_prompt = videoPrompt;
+
+                } catch (e: any) {
+                    console.warn(`鏡頭 ${i + 1} 影片提示詞生成失敗: ${e.message}`);
+                    tempStoryboard[i].video_prompt = '影片提示詞生成失敗。';
                 }
 
-                tempStoryboard.push({
-                    cut: i + 1,
-                    image_prompt: promptData.image_prompt,
-                    video_prompt: promptData.video_prompt,
-                    generated_image: generatedImageBase64 ? `data:image/png;base64,${generatedImageBase64}` : ''
-                });
                 setStoryboard([...tempStoryboard]);
             }
+
+            setLoadingMessage('所有階段完成！');
 
         } catch (e: any) {
             console.error(e);
@@ -2137,11 +2394,26 @@ Cut總數: ${numCuts}
                     </div>
                 </div>
                 <div className="form-group">
-                    <label htmlFor="outline">3. 輸入故事大綱</label>
-                    <textarea id="outline" value={outline} onChange={e => setOutline(e.target.value)} placeholder="例：一位太空人迷失在一顆陌生的紅色星球上，發現了古老文明的遺跡。"></textarea>
+                    <label htmlFor="generation-mode">3. 選擇生成模式</label>
+                    <select id="generation-mode" value={generationMode} onChange={e => setGenerationMode(e.target.value)}>
+                        <option value="character_closeup">人物特寫</option>
+                        <option value="character_in_scene">人與場景</option>
+                        <option value="object_closeup">物件特寫</option>
+                        <option value="storytelling_scene">情境故事</option>
+                        <option value="animation">動畫風格</option>
+                        <option value="freestyle">自由創作</option>
+                    </select>
+                </div>
+                <div className="form-group checkbox-group" style={{marginTop: '0.5rem', marginBottom: '1rem'}}>
+                    <input type="checkbox" id="prioritize-face-shots" checked={prioritizeFaceShots} onChange={e => setPrioritizeFaceShots(e.target.checked)} />
+                    <label htmlFor="prioritize-face-shots" title="要求分鏡與畫面產生，人物均會有較大的臉部面積，即盡量減少過於遠景的描繪或鏡位。此類模型中，臉部過小容易造成畫面崩解或失去一致性。">中低畫質影片模型(人物臉部維持)</label>
                 </div>
                 <div className="form-group">
-                    <label htmlFor="num-cuts">4. 設定 Cut 數量</label>
+                    <label htmlFor="outline">4. 輸入故事大綱</label>
+                    <textarea id="outline" value={outline} onChange={e => setOutline(e.target.value)} placeholder={outlinePlaceholders[generationMode]}></textarea>
+                </div>
+                <div className="form-group">
+                    <label htmlFor="num-cuts">5. 設定 Cut 數量</label>
                     <input type="number" id="num-cuts" value={numCuts} onChange={e => setNumCuts(parseInt(e.target.value, 10) || 1)} min="1" />
                 </div>
                 <button className="btn btn-primary" onClick={handleGenerate} disabled={!isFormValid || isLoading}>
@@ -2394,6 +2666,19 @@ Cut總數: ${numCuts}
                                     >
                                         🖼️ 更換圖片
                                     </button>
+                                    {detailCutIndex > 0 && storyboard[detailCutIndex - 1]?.generated_image && (
+                                        <button
+                                            className="btn btn-secondary"
+                                            onClick={() => {
+                                                setShowCutDetail(false);
+                                                handleExtendAndCorrectImage(detailCutIndex);
+                                            }}
+                                            disabled={regeneratingIndex === detailCutIndex}
+                                            title="以上一個鏡頭為參考圖進行生成，適合連貫的動作場景。"
+                                        >
+                                            {regeneratingIndex === detailCutIndex ? '生成中...' : '↔️ 延伸修正'}
+                                        </button>
+                                    )}
                                     <button
                                         className="btn btn-secondary"
                                         onClick={() => downloadImage(detailCutIndex)}
