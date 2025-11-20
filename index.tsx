@@ -115,6 +115,28 @@ const App = () => {
     const ffmpegRef = useRef(new FFmpeg());
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.API_KEY! });
 
+    // Helper function to clean JSON responses (remove markdown code blocks)
+    const cleanJsonResponse = (text: string): string => {
+        let cleaned = text.trim();
+
+        // Remove markdown code block markers
+        // Handles: ```json\n{...}\n``` or ```\n{...}\n```
+        cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, '');
+        cleaned = cleaned.replace(/\n?```\s*$/, '');
+
+        // Trim again after removing markers
+        cleaned = cleaned.trim();
+
+        console.log('[JSON 清理] 原始長度:', text.length, '清理後長度:', cleaned.length);
+        if (cleaned !== text) {
+            console.log('[JSON 清理] 已移除 markdown 代碼塊標記');
+            console.log('[JSON 清理] 原始開頭:', text.substring(0, 50));
+            console.log('[JSON 清理] 清理後開頭:', cleaned.substring(0, 50));
+        }
+
+        return cleaned;
+    };
+
     // Helper function to call language model (Gemini or OpenAI-compatible)
     const callLanguageModel = async (prompt: string, options?: { jsonMode?: boolean, schema?: any }): Promise<string> => {
         const langConfig = modelSettings.languageModel;
@@ -232,6 +254,13 @@ const App = () => {
             }
 
             console.log('[OpenAI API] 成功獲取內容，長度:', content.length);
+
+            // Clean response if JSON mode is enabled (remove markdown code blocks)
+            if (options?.jsonMode) {
+                const cleaned = cleanJsonResponse(content);
+                return cleaned;
+            }
+
             return content;
         }
 
