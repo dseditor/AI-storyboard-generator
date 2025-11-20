@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import ModelManagement, { ModelSettings, LanguageModelConfig, ImageModelConfig, VideoModelConfig } from './ModelManagement';
 
 declare var JSZip: any;
 
@@ -64,6 +65,39 @@ const App = () => {
     // Notification state
     const [notification, setNotification] = useState<{ message: string, type: 'success' | 'info' | 'error' } | null>(null);
     const [confirmDialog, setConfirmDialog] = useState<{ message: string, onConfirm: () => void } | null>(null);
+
+    // Model management state
+    const [showModelManagement, setShowModelManagement] = useState(false);
+    const [modelSettings, setModelSettings] = useState<ModelSettings>(() => {
+        const saved = localStorage.getItem('modelSettings');
+        if (saved) {
+            try {
+                return JSON.parse(saved);
+            } catch (e) {
+                console.error('Failed to parse model settings:', e);
+            }
+        }
+        // Default settings
+        return {
+            languageModel: {
+                provider: 'gemini',
+                gemini: { apiKey: apiKey }
+            },
+            imageModel: {
+                provider: 'gemini',
+                gemini: { apiKey: apiKey }
+            },
+            videoModel: {
+                endpoint: comfyUIUrl,
+                workflowName: workflowName,
+                startFrameNode: startFrameNode,
+                endFrameNode: endFrameNode,
+                promptNode: promptNode,
+                saveVideoNode: saveVideoNode,
+                resolution: videoResolution
+            }
+        };
+    });
 
     // Preset/template state
     const [showPresetModal, setShowPresetModal] = useState(false);
@@ -415,6 +449,14 @@ const App = () => {
         localStorage.setItem('projectName', projectName);
         setShowSettings(false);
         showNotification('設定已儲存！', 'success');
+    };
+
+    // Handle model management save
+    const handleSaveModelSettings = (settings: ModelSettings) => {
+        setModelSettings(settings);
+        localStorage.setItem('modelSettings', JSON.stringify(settings));
+        setShowModelManagement(false);
+        showNotification('模型設定已儲存！', 'success');
     };
 
     // Save current settings as a preset
@@ -2198,9 +2240,14 @@ ${videoModelConstraintInstruction}
         <div className="container">
             <div className="header">
                 <h1>AI 分鏡稿產生器</h1>
-                <button className="btn btn-settings" onClick={() => setShowSettings(true)} title="設定">
-                    ⚙️
-                </button>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                    <button className="btn btn-settings" onClick={() => setShowModelManagement(true)} title="模型管理">
+                        🤖
+                    </button>
+                    <button className="btn btn-settings" onClick={() => setShowSettings(true)} title="設定">
+                        ⚙️
+                    </button>
+                </div>
             </div>
 
             {showSettings && (
@@ -3086,6 +3133,15 @@ ${videoModelConstraintInstruction}
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Model Management Modal */}
+            {showModelManagement && (
+                <ModelManagement
+                    onClose={() => setShowModelManagement(false)}
+                    currentSettings={modelSettings}
+                    onSave={handleSaveModelSettings}
+                />
             )}
         </div>
     );
