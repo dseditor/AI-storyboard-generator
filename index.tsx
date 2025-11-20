@@ -437,18 +437,10 @@ const App = () => {
 
     // Save settings to localStorage
     const handleSaveSettings = () => {
-        localStorage.setItem('apiKey', apiKey);
-        localStorage.setItem('comfyUIUrl', comfyUIUrl);
-        localStorage.setItem('workflowName', workflowName);
-        localStorage.setItem('startFrameNode', startFrameNode);
-        localStorage.setItem('endFrameNode', endFrameNode);
-        localStorage.setItem('promptNode', promptNode);
-        localStorage.setItem('saveVideoNode', saveVideoNode);
-        localStorage.setItem('videoResolution', videoResolution.toString());
         localStorage.setItem('saveVideosInProject', saveVideosInProject.toString());
         localStorage.setItem('projectName', projectName);
         setShowSettings(false);
-        showNotification('設定已儲存！', 'success');
+        showNotification('專案設定已儲存！', 'success');
     };
 
     // Handle model management save
@@ -2241,10 +2233,10 @@ ${videoModelConstraintInstruction}
             <div className="header">
                 <h1>AI 分鏡稿產生器</h1>
                 <div style={{ display: 'flex', gap: '10px' }}>
-                    <button className="btn btn-settings" onClick={() => setShowModelManagement(true)} title="模型管理">
+                    <button className="btn btn-settings" onClick={() => setShowModelManagement(true)} title="模型管理 - 配置語言、圖片、影片模型">
                         🤖
                     </button>
-                    <button className="btn btn-settings" onClick={() => setShowSettings(true)} title="設定">
+                    <button className="btn btn-settings" onClick={() => setShowSettings(true)} title="專案設定 - 專案名稱、儲存選項等">
                         ⚙️
                     </button>
                 </div>
@@ -2253,7 +2245,7 @@ ${videoModelConstraintInstruction}
             {showSettings && (
                 <div className="modal-overlay" onClick={() => setShowSettings(false)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <h2>設定</h2>
+                        <h2>專案設定</h2>
                         <div className="settings-form">
                             <div className="form-group">
                                 <label>專案名稱 (選填)</label>
@@ -2265,84 +2257,6 @@ ${videoModelConstraintInstruction}
                                 />
                                 <small style={{color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px'}}>
                                     儲存專案時將使用此名稱作為檔名，留空則使用時間戳記
-                                </small>
-                            </div>
-                            <div className="form-group">
-                                <label>API Key (選填)</label>
-                                <input
-                                    type="password"
-                                    value={apiKey}
-                                    onChange={(e) => setApiKey(e.target.value)}
-                                    placeholder="輸入 Google Gemini API Key"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>ComfyUI URL</label>
-                                <input
-                                    type="text"
-                                    value={comfyUIUrl}
-                                    onChange={(e) => setComfyUIUrl(e.target.value)}
-                                    placeholder="http://127.0.0.1:8188"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>工作流名稱</label>
-                                <input
-                                    type="text"
-                                    value={workflowName}
-                                    onChange={(e) => setWorkflowName(e.target.value)}
-                                    placeholder="WanSE.json"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>起始幀節點 (StartFrame)</label>
-                                <input
-                                    type="text"
-                                    value={startFrameNode}
-                                    onChange={(e) => setStartFrameNode(e.target.value)}
-                                    placeholder="68"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>結束幀節點 (EndFrame)</label>
-                                <input
-                                    type="text"
-                                    value={endFrameNode}
-                                    onChange={(e) => setEndFrameNode(e.target.value)}
-                                    placeholder="62"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>提示詞節點</label>
-                                <input
-                                    type="text"
-                                    value={promptNode}
-                                    onChange={(e) => setPromptNode(e.target.value)}
-                                    placeholder="6"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>SaveVideo 節點</label>
-                                <input
-                                    type="text"
-                                    value={saveVideoNode}
-                                    onChange={(e) => setSaveVideoNode(e.target.value)}
-                                    placeholder="107"
-                                />
-                            </div>
-                            <div className="form-group">
-                                <label>影片解析度 (長邊尺寸)</label>
-                                <input
-                                    type="number"
-                                    value={videoResolution}
-                                    onChange={(e) => setVideoResolution(parseInt(e.target.value) || 512)}
-                                    placeholder="512"
-                                    min="256"
-                                    max="2048"
-                                    step="64"
-                                />
-                                <small style={{color: '#888', fontSize: '0.85em'}}>
-                                    建議值: 512, 768, 1024 (必須是64的倍數)
                                 </small>
                             </div>
                             <div className="form-group">
@@ -2358,6 +2272,20 @@ ${videoModelConstraintInstruction}
                                 <small style={{color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px', marginLeft: '30px'}}>
                                     ⚠️ 如果不勾選，將只儲存 ComfyUI URL 路徑。注意：URL 可能會在 ComfyUI 重啟後失效。
                                 </small>
+                            </div>
+                            <div style={{
+                                padding: '15px',
+                                backgroundColor: '#2a2a2a',
+                                borderRadius: '8px',
+                                borderLeft: '4px solid #4a9eff',
+                                marginTop: '20px'
+                            }}>
+                                <div style={{color: '#4a9eff', fontSize: '14px', fontWeight: 600, marginBottom: '8px'}}>
+                                    💡 提示
+                                </div>
+                                <div style={{color: '#999', fontSize: '13px', lineHeight: '1.6'}}>
+                                    需要配置 API 金鑰或模型設定嗎？請點擊右上角的 <strong style={{color: '#fff'}}>🤖 模型管理</strong> 按鈕。
+                                </div>
                             </div>
 
                             {/* Preset Management */}
