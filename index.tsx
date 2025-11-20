@@ -174,23 +174,55 @@ const App = () => {
                 headers['Authorization'] = `Bearer ${config.apiKey}`;
             }
 
-            const response = await fetch(config.endpoint, {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify(requestBody)
-            });
+            console.log('[OpenAI API] 發送請求到:', config.endpoint);
+            console.log('[OpenAI API] 請求體:', JSON.stringify(requestBody, null, 2));
 
-            if (!response.ok) {
-                throw new Error(`OpenAI 相容 API 調用失敗: ${response.status} ${response.statusText}`);
+            let response: Response;
+            try {
+                response = await fetch(config.endpoint, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(requestBody)
+                });
+            } catch (fetchError: any) {
+                console.error('[OpenAI API] Fetch 失敗:', fetchError);
+                throw new Error(`無法連接到 OpenAI 相容 API: ${fetchError.message}\n端點: ${config.endpoint}\n請檢查：1) 端點 URL 是否正確 2) API 服務是否運行 3) 網絡連接是否正常`);
             }
 
-            const data = await response.json();
+            console.log('[OpenAI API] 響應狀態:', response.status, response.statusText);
+
+            if (!response.ok) {
+                let errorDetail = '';
+                try {
+                    const errorData = await response.json();
+                    errorDetail = JSON.stringify(errorData, null, 2);
+                    console.error('[OpenAI API] 錯誤詳情:', errorDetail);
+                } catch (e) {
+                    const errorText = await response.text();
+                    errorDetail = errorText;
+                    console.error('[OpenAI API] 錯誤文本:', errorText);
+                }
+                throw new Error(`OpenAI 相容 API 調用失敗\n狀態: ${response.status} ${response.statusText}\n端點: ${config.endpoint}\n詳情: ${errorDetail}`);
+            }
+
+            let data: any;
+            try {
+                data = await response.json();
+                console.log('[OpenAI API] 響應數據:', JSON.stringify(data, null, 2));
+            } catch (parseError: any) {
+                const rawText = await response.text();
+                console.error('[OpenAI API] JSON 解析失敗，原始響應:', rawText);
+                throw new Error(`OpenAI 相容 API 返回了無效的 JSON\n原始響應: ${rawText.substring(0, 500)}`);
+            }
+
             const content = data.choices?.[0]?.message?.content;
 
             if (!content) {
-                throw new Error('OpenAI 相容 API 返回了空的回應');
+                console.error('[OpenAI API] 響應缺少內容，完整數據:', data);
+                throw new Error(`OpenAI 相容 API 返回了空的回應\n響應結構: ${JSON.stringify(data, null, 2)}`);
             }
 
+            console.log('[OpenAI API] 成功獲取內容，長度:', content.length);
             return content;
         }
 
@@ -2081,21 +2113,37 @@ ${facePriorityInstruction}
 **語言:** 'image_prompt' 的內容必須使用繁體中文撰寫。
 請嚴格遵循JSON格式，輸出一個包含 ${numCuts} 個物件的JSON陣列。`;
 
-            const text = await callLanguageModel(imagePromptsJsonPrompt, {
-                jsonMode: true,
-                schema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            image_prompt: { type: Type.STRING },
-                        },
-                        required: ["image_prompt"]
+            let text: string;
+            try {
+                console.log('[階段 1] 開始調用語言模型生成圖片提示詞...');
+                text = await callLanguageModel(imagePromptsJsonPrompt, {
+                    jsonMode: true,
+                    schema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                image_prompt: { type: Type.STRING },
+                            },
+                            required: ["image_prompt"]
+                        }
                     }
-                }
-            });
+                });
+                console.log('[階段 1] 成功獲取響應，長度:', text.length);
+            } catch (e: any) {
+                console.error('[階段 1] 語言模型調用失敗:', e);
+                throw new Error(`階段 1 失敗：生成圖片提示詞時出錯\n${e.message}`);
+            }
 
-            const generatedImagePrompts = JSON.parse(text);
+            let generatedImagePrompts: any[];
+            try {
+                console.log('[階段 1] 解析 JSON 響應...');
+                generatedImagePrompts = JSON.parse(text);
+                console.log('[階段 1] 成功解析，獲得', generatedImagePrompts.length, '個提示詞');
+            } catch (parseError: any) {
+                console.error('[階段 1] JSON 解析失敗，原始文本:', text);
+                throw new Error(`階段 1 失敗：無法解析 JSON 響應\n原始響應: ${text.substring(0, 500)}\n錯誤: ${parseError.message}`);
+            }
 
             if (!Array.isArray(generatedImagePrompts) || generatedImagePrompts.length === 0) {
                 throw new Error("API 未能生成有效的腳本，請調整大綱後再試。");
@@ -2118,20 +2166,26 @@ ${facePriorityInstruction}
                 }
             };
 
+            console.log('[階段 2] 開始生成', tempStoryboard.length, '張分鏡圖...');
             for (let i = 0; i < tempStoryboard.length; i++) {
                 setLoadingMessage(`階段 2/3: 正在生成第 ${i + 1} / ${tempStoryboard.length} 張分鏡圖...`);
 
                 try {
+                    console.log(`[階段 2] 生成第 ${i + 1} 張圖片...`);
                     const generatedImage = await generateImage(processedImage, tempStoryboard[i].image_prompt);
                     tempStoryboard[i].generated_image = generatedImage;
+                    console.log(`[階段 2] 第 ${i + 1} 張圖片生成成功`);
                     setStoryboard([...tempStoryboard]);
                 } catch (e: any) {
+                    console.error(`[階段 2] 第 ${i + 1} 張圖片生成失敗:`, e);
                     console.warn(`鏡頭 ${i + 1} 圖片生成失敗: ${e.message}`);
                     tempStoryboard[i].generated_image = '';
                 }
             }
+            console.log('[階段 2] 圖片生成階段完成');
 
             // --- PHASE 3: Generate Video Prompts ---
+            console.log('[階段 3] 開始生成影片提示詞...');
             setLoadingMessage('階段 3/3: 正在根據圖片生成過場提示詞...');
 
             const videoModelConstraintInstruction = prioritizeFaceShots ? `
@@ -2148,6 +2202,7 @@ ${facePriorityInstruction}
                 }
 
                 setLoadingMessage(`階段 3/3: 正在生成第 ${i + 1} / ${tempStoryboard.length} 段影片提示詞...`);
+                console.log(`[階段 3] 生成第 ${i + 1} 段影片提示詞...`);
 
                 try {
                     const currentImagePart = {
@@ -2198,6 +2253,7 @@ ${videoModelConstraintInstruction}
                     let videoPrompt = '';
 
                     if (modelSettings.languageModel.provider === 'gemini') {
+                        console.log(`[階段 3] 使用 Gemini 生成第 ${i + 1} 段影片提示詞（帶圖片）...`);
                         const geminiKey = modelSettings.languageModel.gemini?.apiKey || apiKey;
                         const geminiAI = new GoogleGenAI({ apiKey: geminiKey });
 
@@ -2211,7 +2267,9 @@ ${videoModelConstraintInstruction}
                         });
 
                         videoPrompt = videoResponse.text?.trim() || '影片提示詞生成失敗。';
+                        console.log(`[階段 3] Gemini 生成成功，長度: ${videoPrompt.length}`);
                     } else {
+                        console.log(`[階段 3] 使用 OpenAI 相容 API 生成第 ${i + 1} 段影片提示詞（純文字）...`);
                         // For OpenAI-compatible, we'll use text-only prompt with image descriptions
                         const textOnlyPrompt = isLastCut
                             ? `${videoPromptRequest}\n\n圖片描述：${tempStoryboard[i].image_prompt}`
@@ -2219,11 +2277,14 @@ ${videoModelConstraintInstruction}
 
                         videoPrompt = await callLanguageModel(textOnlyPrompt);
                         videoPrompt = videoPrompt.trim();
+                        console.log(`[階段 3] OpenAI 相容 API 生成成功，長度: ${videoPrompt.length}`);
                     }
 
                     tempStoryboard[i].video_prompt = videoPrompt;
+                    console.log(`[階段 3] 第 ${i + 1} 段影片提示詞設定完成`);
 
                 } catch (e: any) {
+                    console.error(`[階段 3] 第 ${i + 1} 段影片提示詞生成失敗:`, e);
                     console.warn(`鏡頭 ${i + 1} 影片提示詞生成失敗: ${e.message}`);
                     tempStoryboard[i].video_prompt = '影片提示詞生成失敗。';
                 }
@@ -2231,10 +2292,11 @@ ${videoModelConstraintInstruction}
                 setStoryboard([...tempStoryboard]);
             }
 
+            console.log('[階段 3] 影片提示詞生成階段完成');
             setLoadingMessage('所有階段完成！');
 
         } catch (e: any) {
-            console.error(e);
+            console.error('[總體錯誤]', e);
             setError(`生成失敗: ${e.message}`);
         } finally {
             setIsLoading(false);
