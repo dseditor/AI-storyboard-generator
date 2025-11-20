@@ -115,6 +115,140 @@ const App = () => {
     const ffmpegRef = useRef(new FFmpeg());
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.API_KEY! });
 
+    // Helper function to call language model (Gemini or OpenAI-compatible)
+    const callLanguageModel = async (prompt: string, options?: { jsonMode?: boolean, schema?: any }): Promise<string> => {
+        const langConfig = modelSettings.languageModel;
+
+        if (langConfig.provider === 'gemini') {
+            const geminiKey = langConfig.gemini?.apiKey || apiKey;
+            if (!geminiKey) {
+                throw new Error('請在模型管理中設定 Gemini API 金鑰');
+            }
+
+            const geminiAI = new GoogleGenAI({ apiKey: geminiKey });
+            const config: any = {};
+
+            if (options?.jsonMode) {
+                config.responseMimeType = "application/json";
+                if (options.schema) {
+                    config.responseSchema = options.schema;
+                }
+            }
+
+            const response = await geminiAI.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: prompt,
+                config: config
+            });
+
+            const text = response.text;
+            if (!text) {
+                const feedback = response?.promptFeedback;
+                const blockReason = feedback?.blockReason;
+                throw new Error(`API 未能生成有效的回應。原因: ${blockReason || 'API 返回了空的回應'}`);
+            }
+
+            return text;
+        } else if (langConfig.provider === 'openai-compatible') {
+            const config = langConfig.openaiCompatible;
+            if (!config?.endpoint || !config?.modelName) {
+                throw new Error('請在模型管理中設定 OpenAI 相容 API 的端點和模型名稱');
+            }
+
+            const messages = [{ role: 'user', content: prompt }];
+            const requestBody: any = {
+                model: config.modelName,
+                messages: messages,
+                temperature: 0.7,
+            };
+
+            if (options?.jsonMode) {
+                requestBody.response_format = { type: 'json_object' };
+            }
+
+            const headers: any = {
+                'Content-Type': 'application/json',
+            };
+
+            if (config.apiKey) {
+                headers['Authorization'] = `Bearer ${config.apiKey}`;
+            }
+
+            const response = await fetch(config.endpoint, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                throw new Error(`OpenAI 相容 API 調用失敗: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            const content = data.choices?.[0]?.message?.content;
+
+            if (!content) {
+                throw new Error('OpenAI 相容 API 返回了空的回應');
+            }
+
+            return content;
+        }
+
+        throw new Error('未設定語言模型提供者');
+    };
+
+    // Helper function to generate images (Gemini or ComfyUI)
+    const generateImage = async (referenceImageBase64: string, prompt: string): Promise<string> => {
+        const imgConfig = modelSettings.imageModel;
+
+        if (imgConfig.provider === 'gemini') {
+            const geminiKey = imgConfig.gemini?.apiKey || apiKey;
+            if (!geminiKey) {
+                throw new Error('請在模型管理中設定 Gemini API 金鑰');
+            }
+
+            const geminiAI = new GoogleGenAI({ apiKey: geminiKey });
+            const initialImagePart = {
+                inlineData: {
+                    data: referenceImageBase64.split(',')[1],
+                    mimeType: 'image/png',
+                }
+            };
+
+            const imageResponse = await geminiAI.models.generateContent({
+                model: 'gemini-2.5-flash-image',
+                contents: { parts: [initialImagePart, { text: prompt }] },
+                config: {
+                    responseModalities: [Modality.IMAGE],
+                },
+            });
+
+            let generatedImageBase64 = '';
+            const parts = imageResponse?.candidates?.[0]?.content?.parts;
+            if (parts) {
+                for (const part of parts) {
+                    if (part.inlineData) {
+                        generatedImageBase64 = part.inlineData.data;
+                        break;
+                    }
+                }
+            }
+
+            if (!generatedImageBase64) {
+                const feedback = imageResponse?.promptFeedback;
+                const blockReason = feedback?.blockReason;
+                throw new Error(`圖片生成失敗。原因: ${blockReason || '未知錯誤'}`);
+            }
+
+            return `data:image/png;base64,${generatedImageBase64}`;
+        } else if (imgConfig.provider === 'comfyui') {
+            // TODO: Implement ComfyUI image generation
+            throw new Error('ComfyUI 圖片生成功能尚未實作');
+        }
+
+        throw new Error('未設定圖片模型提供者');
+    };
+
     const outlinePlaceholders: { [key: string]: string } = {
         character_closeup: '請描述角色的特寫鏡頭，專注於表情、情緒或與特定物件的互動。例如：「角色1 微笑著，陽光灑在她臉上，手中拿著 產品A。」',
         character_in_scene: '請描述角色與環境的互動。例如：「角色1 敏捷地在充滿未來感的都市叢林中攀爬穿梭。」',
@@ -1785,27 +1919,15 @@ const App = () => {
                 setLoadingMessage(`正在重新生成第 ${i + 1} / ${tempStoryboard.length} 張分鏡圖...`);
                 tempStoryboard[i].generated_image = '';
                 setStoryboard([...tempStoryboard]);
-                const imageResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash-image',
-                    contents: { parts: [initialImagePart, { text: promptData.image_prompt }] },
-                    config: { responseModalities: [Modality.IMAGE] },
-                });
-                let generatedImageBase64 = '';
-                const parts = imageResponse?.candidates?.[0]?.content?.parts;
-                if (parts) {
-                    for (const part of parts) {
-                        if (part.inlineData) {
-                            generatedImageBase64 = part.inlineData.data;
-                            break;
-                        }
-                    }
+
+                try {
+                    const generatedImage = await generateImage(processedImage, promptData.image_prompt);
+                    tempStoryboard[i].generated_image = generatedImage;
+                } catch (e: any) {
+                    console.warn(`Cut ${i + 1} 圖片生成失敗: ${e.message}`);
+                    tempStoryboard[i].generated_image = '';
                 }
-                if (!generatedImageBase64) {
-                    const feedback = imageResponse?.promptFeedback;
-                    const blockReason = feedback?.blockReason;
-                    console.warn(`Cut ${i + 1} 未能生成圖片。原因: ${blockReason || '未知錯誤'}`);
-                }
-                tempStoryboard[i].generated_image = generatedImageBase64 ? `data:image/png;base64,${generatedImageBase64}` : '';
+
                 setStoryboard([...tempStoryboard]);
             }
         } catch (e: any) {
@@ -1847,52 +1969,40 @@ const App = () => {
 
             while (attempt <= 2) {
                 try {
-                    const imageResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash-image',
-                        contents: { parts: [previousImagePart, { text: promptData.image_prompt }] },
-                        config: { responseModalities: [Modality.IMAGE] },
-                    });
+                    // Use previous cut image as reference
+                    const previousImage = previousCut.generated_image;
+                    const generatedImage = await generateImage(previousImage, promptData.image_prompt);
 
-                    let generatedImageBase64 = '';
-                    const parts = imageResponse?.candidates?.[0]?.content?.parts;
-                    if (parts) {
-                        for (const part of parts) {
-                            if (part.inlineData) {
-                                generatedImageBase64 = part.inlineData.data;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!generatedImageBase64) {
-                        const feedback = imageResponse?.promptFeedback;
-                        const blockReason = feedback?.blockReason;
-                        if (blockReason === 'SAFETY' && attempt === 1) {
-                            console.warn(`延伸修正 #${index + 1} 因安全原因被阻擋。嘗試修正提示詞後重試...`);
+                    fullDataUrl = generatedImage;
+                    break; // Success, exit loop
+                } catch (e: any) {
+                    // Handle safety issues (only for Gemini)
+                    if (e.message && e.message.includes('安全') && attempt === 1 && modelSettings.languageModel.provider === 'gemini') {
+                        console.warn(`延伸修正 #${index + 1} 因安全原因被阻擋。嘗試修正提示詞後重試...`);
+                        try {
                             const sanitizationRequest = `以下圖片提示詞因安全原因被阻擋。請在保留原意的基礎上，將其改寫得更安全、更符合內容政策。原始提示詞： "${promptData.image_prompt}"`;
-                            const sanitizedResponse = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: sanitizationRequest });
+                            const sanitizedPrompt = await callLanguageModel(sanitizationRequest);
 
-                            if (!sanitizedResponse.text) throw new Error('無法自動修正提示詞。');
+                            if (!sanitizedPrompt) throw new Error('無法自動修正提示詞。');
 
-                            const sanitizedImagePrompt = sanitizedResponse.text.trim();
+                            const sanitizedImagePrompt = sanitizedPrompt.trim();
                             tempStoryboard[index].image_prompt = sanitizedImagePrompt;
 
                             attempt++;
                             continue;
+                        } catch (sanitizeError) {
+                            throw new Error('無法自動修正提示詞');
                         }
-                        throw new Error(`API返回空圖片。原因: ${blockReason || '未知'}`);
                     }
 
-                    fullDataUrl = `data:image/png;base64,${generatedImageBase64}`;
-                    break;
-
-                } catch (e: any) {
+                    // Handle rate limiting
                     if ((e.message.includes('429') || e.message.toLowerCase().includes('quota')) && attempt === 1) {
                         setLoadingMessage(`API用量限制。等待1分鐘後重試...`);
                         await new Promise(resolve => setTimeout(resolve, 60000));
                         attempt++;
                         continue;
                     }
+
                     throw e;
                 }
             }
@@ -1971,30 +2081,20 @@ ${facePriorityInstruction}
 **語言:** 'image_prompt' 的內容必須使用繁體中文撰寫。
 請嚴格遵循JSON格式，輸出一個包含 ${numCuts} 個物件的JSON陣列。`;
 
-            const imagePromptsResponse = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: imagePromptsJsonPrompt,
-                config: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                image_prompt: { type: Type.STRING },
-                            },
-                            required: ["image_prompt"]
-                        }
+            const text = await callLanguageModel(imagePromptsJsonPrompt, {
+                jsonMode: true,
+                schema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            image_prompt: { type: Type.STRING },
+                        },
+                        required: ["image_prompt"]
                     }
                 }
             });
 
-            const text = imagePromptsResponse.text;
-            if (!text) {
-                const feedback = imagePromptsResponse?.promptFeedback;
-                const blockReason = feedback?.blockReason;
-                throw new Error(`API 未能生成有效的腳本。原因: ${blockReason || 'API 返回了空的回應'}`);
-            }
             const generatedImagePrompts = JSON.parse(text);
 
             if (!Array.isArray(generatedImagePrompts) || generatedImagePrompts.length === 0) {
@@ -2022,34 +2122,8 @@ ${facePriorityInstruction}
                 setLoadingMessage(`階段 2/3: 正在生成第 ${i + 1} / ${tempStoryboard.length} 張分鏡圖...`);
 
                 try {
-                    const imageResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash-image',
-                        contents: { parts: [initialImagePart, { text: tempStoryboard[i].image_prompt }] },
-                        config: {
-                            responseModalities: [Modality.IMAGE],
-                        },
-                    });
-
-                    let generatedImageBase64 = '';
-                    const parts = imageResponse?.candidates?.[0]?.content?.parts;
-                    if (parts) {
-                        for (const part of parts) {
-                            if (part.inlineData) {
-                                generatedImageBase64 = part.inlineData.data;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!generatedImageBase64) {
-                        const feedback = imageResponse?.promptFeedback;
-                        const blockReason = feedback?.blockReason;
-                        console.warn(`鏡頭 ${i + 1} 未能生成圖片。原因: ${blockReason || '未知錯誤'}`);
-                        tempStoryboard[i].generated_image = '';
-                    } else {
-                        tempStoryboard[i].generated_image = `data:image/png;base64,${generatedImageBase64}`;
-                    }
-
+                    const generatedImage = await generateImage(processedImage, tempStoryboard[i].image_prompt);
+                    tempStoryboard[i].generated_image = generatedImage;
                     setStoryboard([...tempStoryboard]);
                 } catch (e: any) {
                     console.warn(`鏡頭 ${i + 1} 圖片生成失敗: ${e.message}`);
@@ -2119,16 +2193,34 @@ ${videoModelConstraintInstruction}
 
 **輸出:** 只需輸出影片提示詞，不要添加任何解釋。`;
 
-                    const parts: any[] = nextImagePart
-                        ? [currentImagePart, nextImagePart, { text: videoPromptRequest }]
-                        : [currentImagePart, { text: videoPromptRequest }];
+                    // For video prompts, we need vision capabilities
+                    // If using OpenAI-compatible, construct the prompt without images (for now)
+                    let videoPrompt = '';
 
-                    const videoResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
-                        contents: { parts: parts },
-                    });
+                    if (modelSettings.languageModel.provider === 'gemini') {
+                        const geminiKey = modelSettings.languageModel.gemini?.apiKey || apiKey;
+                        const geminiAI = new GoogleGenAI({ apiKey: geminiKey });
 
-                    const videoPrompt = videoResponse.text?.trim() || '影片提示詞生成失敗。';
+                        const parts: any[] = nextImagePart
+                            ? [currentImagePart, nextImagePart, { text: videoPromptRequest }]
+                            : [currentImagePart, { text: videoPromptRequest }];
+
+                        const videoResponse = await geminiAI.models.generateContent({
+                            model: 'gemini-2.5-flash',
+                            contents: { parts: parts },
+                        });
+
+                        videoPrompt = videoResponse.text?.trim() || '影片提示詞生成失敗。';
+                    } else {
+                        // For OpenAI-compatible, we'll use text-only prompt with image descriptions
+                        const textOnlyPrompt = isLastCut
+                            ? `${videoPromptRequest}\n\n圖片描述：${tempStoryboard[i].image_prompt}`
+                            : `${videoPromptRequest}\n\n第一張圖片描述：${tempStoryboard[i].image_prompt}\n第二張圖片描述：${tempStoryboard[i + 1]?.image_prompt || '未知'}`;
+
+                        videoPrompt = await callLanguageModel(textOnlyPrompt);
+                        videoPrompt = videoPrompt.trim();
+                    }
+
                     tempStoryboard[i].video_prompt = videoPrompt;
 
                 } catch (e: any) {
