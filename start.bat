@@ -67,16 +67,16 @@ if not exist "ComfyUI" (
 )
 
 :: Start the development server
-echo [4/4] Starting development server...
+echo [4/4] Starting development server on port 3034...
 echo.
 echo =====================================
-echo   Server starting...
-echo   Open the displayed URL in your browser
+echo   Server starting on port 3034...
+echo   Open http://localhost:3034 in your browser
 echo   Press Ctrl+C to stop the server
 echo =====================================
 echo.
 
-npm run dev
+npm run dev -- --port 3034
 
 :: If npm run dev exits, pause
 if %ERRORLEVEL% NEQ 0 (
