@@ -155,6 +155,15 @@ const App = () => {
                 throw new Error('請在模型管理中設定 OpenAI 相容 API 的端點和模型名稱');
             }
 
+            // Handle CORS by using Vite proxy for localhost:3001
+            // Convert http://localhost:3001/path to /api/path
+            let endpoint = config.endpoint;
+            if (endpoint.includes('localhost:3001') || endpoint.includes('127.0.0.1:3001')) {
+                const url = new URL(endpoint);
+                endpoint = '/api' + url.pathname;
+                console.log('[OpenAI API] 使用代理，將', config.endpoint, '轉換為', endpoint);
+            }
+
             const messages = [{ role: 'user', content: prompt }];
             const requestBody: any = {
                 model: config.modelName,
@@ -174,19 +183,19 @@ const App = () => {
                 headers['Authorization'] = `Bearer ${config.apiKey}`;
             }
 
-            console.log('[OpenAI API] 發送請求到:', config.endpoint);
+            console.log('[OpenAI API] 發送請求到:', endpoint, '(原始:', config.endpoint, ')');
             console.log('[OpenAI API] 請求體:', JSON.stringify(requestBody, null, 2));
 
             let response: Response;
             try {
-                response = await fetch(config.endpoint, {
+                response = await fetch(endpoint, {
                     method: 'POST',
                     headers: headers,
                     body: JSON.stringify(requestBody)
                 });
             } catch (fetchError: any) {
                 console.error('[OpenAI API] Fetch 失敗:', fetchError);
-                throw new Error(`無法連接到 OpenAI 相容 API: ${fetchError.message}\n端點: ${config.endpoint}\n請檢查：1) 端點 URL 是否正確 2) API 服務是否運行 3) 網絡連接是否正常`);
+                throw new Error(`無法連接到 OpenAI 相容 API: ${fetchError.message}\n端點: ${endpoint}\n請檢查：1) 端點 URL 是否正確 2) API 服務是否運行 3) 網絡連接是否正常`);
             }
 
             console.log('[OpenAI API] 響應狀態:', response.status, response.statusText);
