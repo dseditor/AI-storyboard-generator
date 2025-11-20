@@ -2231,6 +2231,7 @@ ${videoModelConstraintInstruction}
     return (
         <div className="container">
             <div className="header">
+                <div style={{ width: '100px' }}></div>
                 <h1>AI 分鏡稿產生器</h1>
                 <div style={{ display: 'flex', gap: '10px' }}>
                     <button className="btn btn-settings" onClick={() => setShowModelManagement(true)} title="模型管理 - 配置語言、圖片、影片模型">

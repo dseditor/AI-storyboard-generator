@@ -408,20 +408,18 @@ textarea {
 .header {
   display: flex;
   align-items: center;
-  justify-content: center;
-  position: relative;
+  justify-content: space-between;
   width: 100%;
+  gap: 1rem;
 }
 
 .header h1 {
   margin: 0;
+  flex: 1;
+  text-align: center;
 }
 
 .btn-settings {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
   background-color: transparent;
   border: 1px solid var(--border-color);
   padding: 0.5rem;
@@ -433,6 +431,7 @@ textarea {
   align-items: center;
   justify-content: center;
   transition: background-color 0.2s, border-color 0.2s;
+  flex-shrink: 0;
 }
 
 .btn-settings:hover {
