@@ -312,8 +312,98 @@ const App = () => {
 
             return `data:image/png;base64,${generatedImageBase64}`;
         } else if (imgConfig.provider === 'comfyui') {
-            // TODO: Implement ComfyUI image generation
-            throw new Error('ComfyUI 圖片生成功能尚未實作');
+            const comfyConfig = imgConfig.comfyui;
+            if (!comfyConfig) {
+                throw new Error('請在模型管理中設定 ComfyUI 圖片生成參數');
+            }
+
+            console.log('[ComfyUI 圖片生成] 開始生成圖片');
+            console.log('[ComfyUI 圖片生成] 配置:', {
+                endpoint: comfyConfig.endpoint,
+                workflowName: comfyConfig.workflowName,
+                loadImageNode: comfyConfig.loadImageNode,
+                promptNode: comfyConfig.promptNode,
+                saveImageNode: comfyConfig.saveImageNode,
+                resolution: comfyConfig.resolution
+            });
+
+            try {
+                // Load workflow
+                const workflowResponse = await fetch(`./ComfyUI/${comfyConfig.workflowName}`);
+                if (!workflowResponse.ok) {
+                    throw new Error(`無法載入工作流檔案: ${comfyConfig.workflowName}`);
+                }
+                const workflow = await workflowResponse.json();
+                console.log('[ComfyUI 圖片生成] 工作流已載入');
+
+                // Upload reference image
+                const imageName = await uploadImageToComfyUI(referenceImageBase64, `ref_${Date.now()}.png`);
+                console.log('[ComfyUI 圖片生成] 參考圖片已上傳:', imageName);
+
+                // Update workflow nodes
+                if (workflow[comfyConfig.loadImageNode]) {
+                    workflow[comfyConfig.loadImageNode].inputs.image = imageName;
+                    console.log(`[ComfyUI 圖片生成] 已更新 loadImageNode (${comfyConfig.loadImageNode})`);
+                }
+
+                if (workflow[comfyConfig.promptNode]) {
+                    workflow[comfyConfig.promptNode].inputs.text = prompt;
+                    console.log(`[ComfyUI 圖片生成] 已更新 promptNode (${comfyConfig.promptNode})`);
+                }
+
+                // Update resolution in all relevant nodes
+                Object.keys(workflow).forEach(nodeId => {
+                    const node = workflow[nodeId];
+                    if (node.inputs) {
+                        if (node.inputs.width === 512) {
+                            node.inputs.width = comfyConfig.resolution;
+                        }
+                        if (node.inputs.height === 512) {
+                            node.inputs.height = comfyConfig.resolution;
+                        }
+                    }
+                });
+                console.log(`[ComfyUI 圖片生成] 已更新解析度為 ${comfyConfig.resolution}x${comfyConfig.resolution}`);
+
+                // Queue prompt
+                const promptResponse = await fetch(`${comfyConfig.endpoint}/prompt`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: workflow }),
+                });
+
+                if (!promptResponse.ok) {
+                    throw new Error(`ComfyUI 提示佇列失敗: ${promptResponse.statusText}`);
+                }
+
+                const promptResult = await promptResponse.json();
+                const promptId = promptResult.prompt_id;
+                console.log('[ComfyUI 圖片生成] Prompt ID:', promptId);
+
+                // Wait for completion and get image URL
+                const imageUrl = await waitForImageCompletion(promptId, comfyConfig);
+                console.log('[ComfyUI 圖片生成] 圖片已生成:', imageUrl);
+
+                // Fetch the image and convert to base64
+                const imageResponse = await fetch(imageUrl);
+                if (!imageResponse.ok) {
+                    throw new Error(`無法下載生成的圖片: ${imageResponse.statusText}`);
+                }
+                const imageBlob = await imageResponse.blob();
+                const base64 = await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(imageBlob);
+                });
+
+                console.log('[ComfyUI 圖片生成] 圖片已轉換為 base64');
+                return base64;
+
+            } catch (error: any) {
+                console.error('[ComfyUI 圖片生成] 錯誤:', error);
+                throw new Error(`ComfyUI 圖片生成失敗: ${error.message}`);
+            }
         }
 
         throw new Error('未設定圖片模型提供者');
@@ -985,6 +1075,129 @@ const App = () => {
                 } catch (e: any) {
                     console.error('Error checking completion:', e);
                     // Don't reject immediately, continue polling unless it's a network error
+                    if (e.message.includes('fetch')) {
+                        clearInterval(checkInterval);
+                        reject(e);
+                    }
+                }
+            }, 2000); // Check every 2 seconds
+        });
+    };
+
+    // Wait for ComfyUI to complete image generation
+    const waitForImageCompletion = async (promptId: string, comfyConfig: any): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            let attempts = 0;
+            const maxAttempts = 300; // 10 minutes at 2 second intervals
+            let hasSeenInQueue = false;
+
+            const checkInterval = setInterval(async () => {
+                try {
+                    attempts++;
+
+                    if (attempts > maxAttempts) {
+                        clearInterval(checkInterval);
+                        reject(new Error('圖片生成超時（10分鐘）- 請檢查 ComfyUI 是否正常運行'));
+                        return;
+                    }
+
+                    // Check queue status
+                    const queueResponse = await fetch(`${comfyConfig.endpoint}/queue`);
+                    if (queueResponse.ok) {
+                        const queueData = await queueResponse.json();
+                        const inRunning = queueData.queue_running?.some((item: any) => item[1] === promptId);
+                        const inPending = queueData.queue_pending?.some((item: any) => item[1] === promptId);
+
+                        if (inRunning || inPending) {
+                            hasSeenInQueue = true;
+                            console.log(`[圖片生成] Prompt ${promptId} 仍在佇列中 (嘗試 ${attempts})`);
+                            return; // Continue polling
+                        }
+                    }
+
+                    // Check history
+                    const historyResponse = await fetch(`${comfyConfig.endpoint}/history/${promptId}`);
+                    if (!historyResponse.ok) {
+                        console.warn(`[圖片生成] History API 返回 ${historyResponse.status}, 重試中...`);
+                        return; // Continue polling
+                    }
+
+                    const history = await historyResponse.json();
+                    const promptData = history[promptId];
+
+                    if (!promptData) {
+                        if (!hasSeenInQueue) {
+                            console.warn(`[圖片生成] Prompt ${promptId} 不在歷史記錄或佇列中, 重試中...`);
+                            return; // Continue polling
+                        } else {
+                            clearInterval(checkInterval);
+                            reject(new Error('Prompt 從佇列和歷史記錄中消失'));
+                            return;
+                        }
+                    }
+
+                    // Check if completed
+                    const outputs = promptData.outputs;
+
+                    if (outputs && Object.keys(outputs).length > 0) {
+                        clearInterval(checkInterval);
+
+                        console.log('[圖片生成] ComfyUI 輸出已接收:', JSON.stringify(outputs, null, 2));
+
+                        // Get output from SaveImage node
+                        if (outputs[comfyConfig.saveImageNode]) {
+                            const imageData = outputs[comfyConfig.saveImageNode];
+                            console.log(`[圖片生成] SaveImage node (${comfyConfig.saveImageNode}) 輸出:`, JSON.stringify(imageData, null, 2));
+
+                            let imageFilename = null;
+                            let subfolder = '';
+
+                            // Try multiple possible output formats
+                            if (imageData.images && Array.isArray(imageData.images) && imageData.images.length > 0) {
+                                const imgItem = imageData.images[0];
+                                if (typeof imgItem === 'object') {
+                                    imageFilename = imgItem.filename;
+                                    subfolder = imgItem.subfolder || '';
+                                    console.log('[圖片生成] 在 images 物件陣列中找到圖片:', imageFilename);
+                                } else if (typeof imgItem === 'string') {
+                                    imageFilename = imgItem;
+                                    console.log('[圖片生成] 在 images 字串陣列中找到圖片:', imageFilename);
+                                }
+                            } else if (imageData.ui && imageData.ui.images && imageData.ui.images.length > 0) {
+                                imageFilename = imageData.ui.images[0].filename;
+                                subfolder = imageData.ui.images[0].subfolder || '';
+                                console.log('[圖片生成] 在 ui.images 中找到圖片:', imageFilename);
+                            } else if (imageData.filename) {
+                                imageFilename = imageData.filename;
+                                console.log('[圖片生成] 在 filename 屬性中找到圖片:', imageFilename);
+                            }
+
+                            if (imageFilename) {
+                                const imageUrl = subfolder
+                                    ? `${comfyConfig.endpoint}/view?filename=${imageFilename}&subfolder=${subfolder}&type=output`
+                                    : `${comfyConfig.endpoint}/view?filename=${imageFilename}&type=output`;
+                                console.log('[圖片生成] 圖片 URL:', imageUrl);
+                                resolve(imageUrl);
+                            } else {
+                                console.error('[圖片生成] 圖片資料結構:', imageData);
+                                reject(new Error(`在 SaveImage node 輸出中找不到圖片檔案。輸出結構: ${JSON.stringify(Object.keys(imageData))}`));
+                            }
+                        } else {
+                            console.error('[圖片生成] 可用的輸出節點:', Object.keys(outputs));
+                            reject(new Error(`SaveImage node (${comfyConfig.saveImageNode}) 未產生輸出。可用節點: ${Object.keys(outputs).join(', ')}`));
+                        }
+                    } else {
+                        // Check for error status
+                        const status = promptData.status;
+                        if (status && status.status_str === 'error') {
+                            clearInterval(checkInterval);
+                            const errorMessages = status.messages || [];
+                            reject(new Error(`ComfyUI 錯誤: ${JSON.stringify(errorMessages)}`));
+                        }
+                        // Otherwise continue polling
+                    }
+                } catch (e: any) {
+                    console.error('[圖片生成] 檢查完成狀態時發生錯誤:', e);
                     if (e.message.includes('fetch')) {
                         clearInterval(checkInterval);
                         reject(e);
