@@ -120,7 +120,7 @@
   },
   "24": {
     "inputs": {
-      "prompt": "Prompt",
+      "prompt": "ImagePrompt",
       "clip": [
         "2",
         0

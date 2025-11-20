@@ -346,9 +346,41 @@ const App = () => {
                     console.log(`[ComfyUI 圖片生成] 已更新 loadImageNode (${comfyConfig.loadImageNode})`);
                 }
 
+                // Update prompt - support multiple node structures
                 if (workflow[comfyConfig.promptNode]) {
-                    workflow[comfyConfig.promptNode].inputs.text = prompt;
-                    console.log(`[ComfyUI 圖片生成] 已更新 promptNode (${comfyConfig.promptNode})`);
+                    const promptNode = workflow[comfyConfig.promptNode];
+                    console.log(`[ComfyUI 圖片生成] PromptNode (${comfyConfig.promptNode}) 結構:`, JSON.stringify(promptNode, null, 2));
+
+                    // Method 1: Try inputs.text (standard text node)
+                    if (promptNode.inputs && promptNode.inputs.text !== undefined) {
+                        promptNode.inputs.text = prompt;
+                        console.log(`[ComfyUI 圖片生成] 已更新 promptNode.inputs.text`);
+                    }
+                    // Method 2: Try inputs.prompt (some custom nodes)
+                    else if (promptNode.inputs && promptNode.inputs.prompt !== undefined) {
+                        promptNode.inputs.prompt = prompt;
+                        console.log(`[ComfyUI 圖片生成] 已更新 promptNode.inputs.prompt`);
+                    }
+                    // Method 3: String replacement for placeholder like "ImagePrompt"
+                    else {
+                        console.log(`[ComfyUI 圖片生成] 使用字串替換方式更新提示詞`);
+                        // Convert workflow to string, replace placeholder, then parse back
+                        let workflowStr = JSON.stringify(workflow);
+                        const originalLength = workflowStr.length;
+
+                        // Try replacing common placeholders
+                        workflowStr = workflowStr.replace(/"ImagePrompt"/g, JSON.stringify(prompt));
+                        workflowStr = workflowStr.replace(/"PROMPT_PLACEHOLDER"/g, JSON.stringify(prompt));
+                        workflowStr = workflowStr.replace(/"your prompt here"/gi, JSON.stringify(prompt));
+
+                        if (workflowStr.length !== originalLength) {
+                            const workflow_replaced = JSON.parse(workflowStr);
+                            Object.assign(workflow, workflow_replaced);
+                            console.log(`[ComfyUI 圖片生成] 已使用字串替換方式更新提示詞`);
+                        } else {
+                            console.warn(`[ComfyUI 圖片生成] 警告: 無法找到標準的提示詞欄位，請檢查 workflow 結構`);
+                        }
+                    }
                 }
 
                 // Update resolution in all relevant nodes
