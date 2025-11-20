@@ -76,7 +76,7 @@ echo   Press Ctrl+C to stop the server
 echo =====================================
 echo.
 
-npm run dev -- --port 3034
+npm run dev
 
 :: If npm run dev exits, pause
 if %ERRORLEVEL% NEQ 0 (
