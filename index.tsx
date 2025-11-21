@@ -48,6 +48,8 @@ const App = () => {
     const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
     const [videoVersions, setVideoVersions] = useState<number[]>([]); // Track video versions for force re-render
     const [selectedVideos, setSelectedVideos] = useState<Set<number>>(new Set()); // Track selected videos for batch regeneration
+    const [selectedImages, setSelectedImages] = useState<Set<number>>(new Set()); // Track selected images for batch regeneration
+    const [regeneratingImageIndex, setRegeneratingImageIndex] = useState<number | null>(null);
 
     // Video prompt edit modal state
     const [showVideoPromptEdit, setShowVideoPromptEdit] = useState(false);
@@ -381,6 +383,32 @@ const App = () => {
                             console.warn(`[ComfyUI 圖片生成] 警告: 無法找到標準的提示詞欄位，請檢查 workflow 結構`);
                         }
                     }
+                }
+
+                // Generate random seeds for image generation (similar to video generation)
+                const randomSeed = Math.floor(Math.random() * 1000000000000000);
+                console.log(`[ComfyUI 圖片生成] 生成隨機種子: ${randomSeed}`);
+
+                // Update seeds in all KSampler nodes to ensure variation
+                let seedsUpdated = 0;
+                Object.keys(workflow).forEach(nodeId => {
+                    const node = workflow[nodeId];
+                    if (node.inputs) {
+                        // Update seed/noise_seed in KSampler nodes
+                        if (node.inputs.seed !== undefined) {
+                            node.inputs.seed = randomSeed + parseInt(nodeId);
+                            seedsUpdated++;
+                            console.log(`[ComfyUI 圖片生成] 已更新節點 ${nodeId} 的 seed`);
+                        }
+                        if (node.inputs.noise_seed !== undefined) {
+                            node.inputs.noise_seed = randomSeed + parseInt(nodeId);
+                            seedsUpdated++;
+                            console.log(`[ComfyUI 圖片生成] 已更新節點 ${nodeId} 的 noise_seed`);
+                        }
+                    }
+                });
+                if (seedsUpdated > 0) {
+                    console.log(`[ComfyUI 圖片生成] 共更新了 ${seedsUpdated} 個種子值`);
                 }
 
                 // Update resolution in all relevant nodes
@@ -743,6 +771,259 @@ const App = () => {
         setSelectedVideos(new Set());
     };
 
+    // Toggle image selection
+    const toggleImageSelection = (index: number) => {
+        setSelectedImages(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(index)) {
+                newSet.delete(index);
+            } else {
+                newSet.add(index);
+            }
+            return newSet;
+        });
+    };
+
+    // Select all images
+    const selectAllImages = () => {
+        const allIndices = storyboard
+            .map((_, index) => index)
+            .filter(index => storyboard[index]?.generated_image); // Only include images that exist
+        setSelectedImages(new Set(allIndices));
+    };
+
+    // Deselect all images
+    const deselectAllImages = () => {
+        setSelectedImages(new Set());
+    };
+
+    // Regenerate a single image
+    const regenerateSingleImage = async (index: number) => {
+        if (index < 0 || index >= storyboard.length) {
+            setError('無效的圖片索引');
+            return;
+        }
+
+        const currentCut = storyboard[index];
+        if (!currentCut.image_prompt) {
+            setError('圖片提示詞為空');
+            return;
+        }
+
+        try {
+            setRegeneratingImageIndex(index);
+            setError('');
+
+            console.log(`\n=== Regenerating Image ${index + 1} ===`);
+            console.log(`Prompt: ${currentCut.image_prompt.substring(0, 100)}...`);
+
+            // Generate image with new seed (seed randomization happens inside generateImage for ComfyUI)
+            const generatedImage = await generateImage(processedImage!, currentCut.image_prompt);
+
+            // Update storyboard with new image
+            setStoryboard(prevStoryboard => {
+                const updated = [...prevStoryboard];
+                updated[index].generated_image = generatedImage;
+                // Invalidate adjacent video prompts
+                const boardWithInvalidated = invalidateAdjacentVideoPrompts(index, updated);
+                return boardWithInvalidated;
+            });
+
+            console.log(`✓ Image ${index + 1} regenerated`);
+
+            // Determine which videos need to be regenerated
+            const affectedVideos: number[] = [];
+            // Current cut's video uses this image as start image
+            if (index < storyboard.length) {
+                affectedVideos.push(index);
+            }
+            // Previous cut's video uses this image as end image (if not the first cut)
+            if (index > 0 && index - 1 < videoBlobUrls.length && videoBlobUrls[index - 1]) {
+                affectedVideos.push(index - 1);
+            }
+
+            // Clear affected videos
+            if (affectedVideos.length > 0) {
+                setVideoBlobUrls(prevBlobUrls => {
+                    const updated = [...prevBlobUrls];
+                    affectedVideos.forEach(i => {
+                        if (updated[i]?.startsWith('blob:')) {
+                            URL.revokeObjectURL(updated[i]);
+                        }
+                        updated[i] = '';
+                    });
+                    return updated;
+                });
+
+                setGeneratedVideos(prevVideos => {
+                    const updated = [...prevVideos];
+                    affectedVideos.forEach(i => updated[i] = '');
+                    return updated;
+                });
+
+                // Clear merged video
+                if (mergedVideoUrl) {
+                    URL.revokeObjectURL(mergedVideoUrl);
+                    setMergedVideoUrl(null);
+                }
+            }
+
+            const affectedMsg = affectedVideos.length > 0
+                ? ` 受影響的影片: ${affectedVideos.map(i => `Cut ${i + 1}`).join(', ')}`
+                : '';
+
+            showNotification(`圖片 ${index + 1} 重新生成成功！${affectedMsg}`, 'success');
+
+        } catch (e: any) {
+            console.error(`Image ${index + 1} regeneration failed:`, e);
+            setError(`重新生成圖片 ${index + 1} 失敗：${e.message}`);
+        } finally {
+            setRegeneratingImageIndex(null);
+        }
+    };
+
+    // Batch regenerate images
+    const regenerateImagesInBatch = async (mode: 'all' | 'selected') => {
+        if (!processedImage || storyboard.length === 0) {
+            setError('必須先有分鏡腳本才能重新生成圖片。');
+            return;
+        }
+
+        // For 'selected' mode, check if any images are selected
+        if (mode === 'selected' && selectedImages.size === 0) {
+            showNotification('請先選擇要重新生成的圖片', 'info');
+            return;
+        }
+
+        setIsLoading(true);
+        setError('');
+
+        // Determine which images to generate based on mode
+        let indicesToGenerate: number[] = [];
+
+        if (mode === 'all') {
+            // Generate all images
+            indicesToGenerate = Array.from({ length: storyboard.length }, (_, i) => i);
+            console.log('Mode: 全部重新生成圖片 - Regenerating all images');
+        } else if (mode === 'selected') {
+            // Generate only selected images
+            indicesToGenerate = Array.from(selectedImages).sort((a, b) => a - b);
+            console.log(`Mode: 重新生成選中圖片 - Regenerating ${indicesToGenerate.length} selected images`);
+        }
+
+        if (indicesToGenerate.length === 0) {
+            showNotification('沒有需要生成的圖片', 'info');
+            setIsLoading(false);
+            return;
+        }
+
+        const failedImages: Array<{index: number, error: string}> = [];
+        const affectedVideos = new Set<number>();
+
+        try {
+            console.log(`Starting image regeneration for ${indicesToGenerate.length} images...`);
+
+            for (let idx = 0; idx < indicesToGenerate.length; idx++) {
+                const i = indicesToGenerate[idx];
+                const promptData = storyboard[i];
+
+                setLoadingMessage(`正在重新生成第 ${idx + 1} / ${indicesToGenerate.length} 張分鏡圖...`);
+
+                try {
+                    console.log(`\n--- Generating image ${i + 1}/${storyboard.length} ---`);
+                    console.log(`Prompt preview: ${promptData.image_prompt.substring(0, 80)}...`);
+
+                    const generatedImage = await generateImage(processedImage, promptData.image_prompt);
+
+                    // Update storyboard
+                    setStoryboard(prevStoryboard => {
+                        const updated = [...prevStoryboard];
+                        updated[i].generated_image = generatedImage;
+                        return updated;
+                    });
+
+                    // Track affected videos
+                    affectedVideos.add(i);
+                    if (i > 0 && videoBlobUrls[i - 1]) {
+                        affectedVideos.add(i - 1);
+                    }
+
+                    console.log(`✓ Image ${i + 1} generated successfully`);
+
+                } catch (e: any) {
+                    console.error(`✗ Image ${i + 1} failed:`, e.message);
+                    failedImages.push({ index: i, error: e.message });
+
+                    // Still update storyboard with empty image
+                    setStoryboard(prevStoryboard => {
+                        const updated = [...prevStoryboard];
+                        updated[i].generated_image = '';
+                        return updated;
+                    });
+                }
+            }
+
+            // Clear affected videos
+            if (affectedVideos.size > 0) {
+                const affectedArray = Array.from(affectedVideos);
+                setVideoBlobUrls(prevBlobUrls => {
+                    const updated = [...prevBlobUrls];
+                    affectedArray.forEach(i => {
+                        if (updated[i]?.startsWith('blob:')) {
+                            URL.revokeObjectURL(updated[i]);
+                        }
+                        updated[i] = '';
+                    });
+                    return updated;
+                });
+
+                setGeneratedVideos(prevVideos => {
+                    const updated = [...prevVideos];
+                    affectedArray.forEach(i => updated[i] = '');
+                    return updated;
+                });
+
+                // Invalidate video prompts for all regenerated images
+                setStoryboard(prevStoryboard => {
+                    let updated = [...prevStoryboard];
+                    indicesToGenerate.forEach(i => {
+                        updated = invalidateAdjacentVideoPrompts(i, updated);
+                    });
+                    return updated;
+                });
+
+                // Clear merged video
+                if (mergedVideoUrl) {
+                    URL.revokeObjectURL(mergedVideoUrl);
+                    setMergedVideoUrl(null);
+                }
+            }
+
+            // Show results
+            if (failedImages.length === 0) {
+                showNotification(`所有 ${indicesToGenerate.length} 張圖片重新生成成功！`, 'success');
+            } else {
+                const successCount = indicesToGenerate.length - failedImages.length;
+                showNotification(
+                    `圖片重新生成完成：${successCount} 張成功，${failedImages.length} 張失敗。`,
+                    failedImages.length < indicesToGenerate.length ? 'success' : 'error'
+                );
+                console.error('Failed images:', failedImages);
+            }
+
+            // Deselect images after batch regeneration
+            if (mode === 'selected') {
+                deselectAllImages();
+            }
+
+        } catch (e: any) {
+            console.error('Batch image regeneration failed:', e);
+            setError(`批次重新生成圖片失敗: ${e.message}`);
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
+        }
+    };
 
     // Open video prompt edit modal
     const openVideoPromptEdit = (index: number) => {
@@ -2807,19 +3088,70 @@ ${videoModelConstraintInstruction}
                     </div>
                 </div>
                 <div className="form-group">
-                    <label htmlFor="generation-mode">3. 選擇生成模式</label>
-                    <select id="generation-mode" value={generationMode} onChange={e => setGenerationMode(e.target.value)}>
-                        <option value="character_closeup">人物特寫</option>
-                        <option value="character_in_scene">人與場景</option>
-                        <option value="object_closeup">物件特寫</option>
-                        <option value="storytelling_scene">情境故事</option>
-                        <option value="animation">動畫風格</option>
-                        <option value="freestyle">自由創作</option>
-                    </select>
+                    <label>3. 選擇生成模式</label>
+                    <div className="mode-cards-grid">
+                        <div
+                            className={`mode-card mode-card-purple ${generationMode === 'character_closeup' ? 'active' : ''}`}
+                            onClick={() => setGenerationMode('character_closeup')}
+                        >
+                            <div className="mode-icon">👤</div>
+                            <div className="mode-title">人物特寫</div>
+                        </div>
+                        <div
+                            className={`mode-card mode-card-blue ${generationMode === 'character_in_scene' ? 'active' : ''}`}
+                            onClick={() => setGenerationMode('character_in_scene')}
+                        >
+                            <div className="mode-icon">🎬</div>
+                            <div className="mode-title">人與場景</div>
+                        </div>
+                        <div
+                            className={`mode-card mode-card-green ${generationMode === 'object_closeup' ? 'active' : ''}`}
+                            onClick={() => setGenerationMode('object_closeup')}
+                        >
+                            <div className="mode-icon">📦</div>
+                            <div className="mode-title">物件特寫</div>
+                        </div>
+                        <div
+                            className={`mode-card mode-card-orange ${generationMode === 'storytelling_scene' ? 'active' : ''}`}
+                            onClick={() => setGenerationMode('storytelling_scene')}
+                        >
+                            <div className="mode-icon">📖</div>
+                            <div className="mode-title">情境故事</div>
+                        </div>
+                        <div
+                            className={`mode-card mode-card-pink ${generationMode === 'animation' ? 'active' : ''}`}
+                            onClick={() => setGenerationMode('animation')}
+                        >
+                            <div className="mode-icon">✨</div>
+                            <div className="mode-title">動畫風格</div>
+                        </div>
+                        <div
+                            className={`mode-card mode-card-teal ${generationMode === 'freestyle' ? 'active' : ''}`}
+                            onClick={() => setGenerationMode('freestyle')}
+                        >
+                            <div className="mode-icon">🎨</div>
+                            <div className="mode-title">自由創作</div>
+                        </div>
+                    </div>
                 </div>
-                <div className="form-group checkbox-group" style={{marginTop: '0.5rem', marginBottom: '1rem'}}>
-                    <input type="checkbox" id="prioritize-face-shots" checked={prioritizeFaceShots} onChange={e => setPrioritizeFaceShots(e.target.checked)} />
-                    <label htmlFor="prioritize-face-shots" title="要求分鏡與畫面產生，人物均會有較大的臉部面積，即盡量減少過於遠景的描繪或鏡位。此類模型中，臉部過小容易造成畫面崩解或失去一致性。">中低畫質影片模型(人物臉部維持)</label>
+                <div className="form-group">
+                    <div className="checkbox-container">
+                        <input
+                            type="checkbox"
+                            id="prioritize-face-shots"
+                            className="modern-checkbox"
+                            checked={prioritizeFaceShots}
+                            onChange={e => setPrioritizeFaceShots(e.target.checked)}
+                        />
+                        <label
+                            htmlFor="prioritize-face-shots"
+                            className="checkbox-label"
+                            title="要求分鏡與畫面產生，人物均會有較大的臉部面積，即盡量減少過於遠景的描繪或鏡位。此類模型中，臉部過小容易造成畫面崩解或失去一致性。"
+                        >
+                            <span className="checkbox-icon">✓</span>
+                            <span className="checkbox-text">中低畫質影片模型 (人物臉部維持)</span>
+                        </label>
+                    </div>
                 </div>
                 <div className="form-group">
                     <label htmlFor="outline">4. 輸入故事大綱</label>
@@ -2854,7 +3186,27 @@ ${videoModelConstraintInstruction}
             {storyboard.length > 0 && !isLoading && (
                  <div className="result-section">
                     <div className="result-header">
-                        <button className="btn" onClick={handleRegenerateImages} disabled={isLoading}>重新生成圖片</button>
+                        <div className="video-generation-controls">
+                            <button
+                                className="btn btn-primary"
+                                onClick={() => regenerateImagesInBatch('all')}
+                                disabled={isLoading}
+                                title="重新生成所有圖片"
+                            >
+                                {isLoading ? '生成中...' : '🎨 重新生成圖片 (全部)'}
+                            </button>
+
+                            {selectedImages.size > 0 && (
+                                <button
+                                    className="btn btn-warning"
+                                    onClick={() => regenerateImagesInBatch('selected')}
+                                    disabled={isLoading}
+                                    title={`重新生成選中的 ${selectedImages.size} 張圖片`}
+                                >
+                                    {isLoading ? '生成中...' : `⚡ 重新生成選中圖片 (${selectedImages.size})`}
+                                </button>
+                            )}
+                        </div>
 
                         <div className="video-generation-controls">
                             <button
@@ -2917,10 +3269,34 @@ ${videoModelConstraintInstruction}
                         )}
                     </div>
 
+                    {storyboard.some(cut => cut.generated_image) && (
+                        <div className="batch-regenerate-controls">
+                            <div className="selection-info">
+                                圖片：已選擇 {selectedImages.size} 張
+                            </div>
+                            <div className="batch-buttons">
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={selectAllImages}
+                                    disabled={isLoading}
+                                >
+                                    全選圖片
+                                </button>
+                                <button
+                                    className="btn btn-secondary"
+                                    onClick={deselectAllImages}
+                                    disabled={isLoading || selectedImages.size === 0}
+                                >
+                                    取消全選圖片
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     {videoBlobUrls.some(url => url && url.length > 0) && (
                         <div className="batch-regenerate-controls">
                             <div className="selection-info">
-                                已選擇 {selectedVideos.size} 個影片
+                                影片：已選擇 {selectedVideos.size} 個
                             </div>
                             <div className="batch-buttons">
                                 <button
@@ -2928,14 +3304,14 @@ ${videoModelConstraintInstruction}
                                     onClick={selectAllVideos}
                                     disabled={isGeneratingVideo}
                                 >
-                                    全選
+                                    全選影片
                                 </button>
                                 <button
                                     className="btn btn-secondary"
                                     onClick={deselectAllVideos}
                                     disabled={isGeneratingVideo || selectedVideos.size === 0}
                                 >
-                                    取消全選
+                                    取消全選影片
                                 </button>
                             </div>
                         </div>
@@ -2980,10 +3356,22 @@ ${videoModelConstraintInstruction}
 
                     <div className="storyboard-grid">
                         {storyboard.map((cut, index) => (
-                            <div key={index} className={`cut-card-compact ${selectedVideos.has(index) ? 'selected' : ''}`}>
+                            <div key={index} className={`cut-card-compact ${selectedVideos.has(index) || selectedImages.has(index) ? 'selected' : ''}`}>
                                 <div className="cut-header">
                                     <h3>Cut #{cut.cut}</h3>
                                     <div className="cut-header-actions">
+                                        {cut.generated_image && (
+                                            <label className="image-select-label" title="選擇此圖片以重新生成">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedImages.has(index)}
+                                                    onChange={() => toggleImageSelection(index)}
+                                                    disabled={isLoading}
+                                                    className="image-select-checkbox"
+                                                />
+                                                <span className="checkbox-label-text">圖片</span>
+                                            </label>
+                                        )}
                                         {videoBlobUrls[index] && (
                                             <label className="video-select-label" title="選擇此影片以重新生成">
                                                 <input
@@ -2993,6 +3381,7 @@ ${videoModelConstraintInstruction}
                                                     disabled={isGeneratingVideo}
                                                     className="video-select-checkbox"
                                                 />
+                                                <span className="checkbox-label-text">影片</span>
                                             </label>
                                         )}
                                         <button
@@ -3098,6 +3487,17 @@ ${videoModelConstraintInstruction}
                                         title="下載圖片"
                                     >
                                         💾 下載圖片
+                                    </button>
+                                    <button
+                                        className="btn btn-regenerate"
+                                        onClick={() => {
+                                            setShowCutDetail(false);
+                                            regenerateSingleImage(detailCutIndex);
+                                        }}
+                                        disabled={regeneratingImageIndex === detailCutIndex || !storyboard[detailCutIndex].image_prompt}
+                                        title="重新生成此圖片（會使用新的隨機種子）"
+                                    >
+                                        {regeneratingImageIndex === detailCutIndex ? '生成中...' : '🔄 重新生成圖片'}
                                     </button>
                                 </div>
                                 <div className="prompt-section">
