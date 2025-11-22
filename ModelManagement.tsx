@@ -117,8 +117,13 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
         currentSettings?.videoModel.gemini?.apiKey || ''
     );
     const [videoGeminiModel, setVideoGeminiModel] = useState(
-        currentSettings?.videoModel.gemini?.modelName || 'veo-3.1-fast-generate-preview'
+        currentSettings?.videoModel.gemini?.modelName || 'veo-2.0-generate-preview-001'
     );
+    const [availableGeminiModels, setAvailableGeminiModels] = useState<string[]>([
+        'veo-2.0-generate-preview-001',
+        'veo-3.1-fast-generate-preview' // Keep as option but allow fetching
+    ]);
+    const [isFetchingModels, setIsFetchingModels] = useState(false);
     const [videoEndpoint, setVideoEndpoint] = useState(
         currentSettings?.videoModel.comfyui?.endpoint || 'http://127.0.0.1:8188'
     );
@@ -275,6 +280,70 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
         showNotification('設定已匯出', 'success');
     };
 
+    const fetchGoogleModels = async () => {
+        if (!videoGeminiKey) {
+            showNotification('請先輸入 Gemini API 金鑰', 'error');
+            return;
+        }
+
+        setIsFetchingModels(true);
+        try {
+            console.log('Starting to fetch models from Google...');
+            // Use the proxy path configured in vite.config.ts
+            const response = await fetch(`/google-api/v1beta/models?key=${videoGeminiKey}`);
+
+            console.log('Response status:', response.status, response.statusText);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('API Error Response:', errorText);
+                throw new Error(`API 請求失敗: ${response.status} - ${errorText}`);
+            }
+
+            const data = await response.json();
+            console.log('Raw models response:', data);
+
+            if (data.error) {
+                throw new Error(`API 返回錯誤: ${data.error.message || JSON.stringify(data.error)}`);
+            }
+
+            if (data.models) {
+                // Filter for models that likely support video generation
+                // Note: The API might not explicitly state "video generation", so we look for "veo" or generic names
+                // For now, we'll grab everything that looks like a video model or just list all "veo" related ones
+                const veoModels = data.models
+                    .filter((m: any) => m.name.includes('veo') || m.name.includes('video'))
+                    .map((m: any) => m.name.replace('models/', ''));
+
+                console.log('Filtered Veo models:', veoModels);
+
+                if (veoModels.length > 0) {
+                    setAvailableGeminiModels(prev => {
+                        const newModels = Array.from(new Set([...prev, ...veoModels]));
+                        return newModels;
+                    });
+                    showNotification(`成功找到 ${veoModels.length} 個影片模型`, 'success');
+                } else {
+                    console.warn('No Veo models found in the list. Available models:', data.models.map((m: any) => m.name));
+                    showNotification('未在您的帳號中找到特定的 Veo 模型，已保留預設模型。請按 F12 查看 Console 了解詳情。', 'info');
+                    // Ensure defaults are present even if fetch returns nothing relevant
+                    setAvailableGeminiModels(prev => {
+                        const defaults = ['veo-2.0-generate-preview-001', 'veo-3.1-fast-generate-preview'];
+                        return Array.from(new Set([...prev, ...defaults]));
+                    });
+                }
+            } else {
+                console.warn('Response did not contain "models" array:', data);
+                showNotification('API 回傳格式不如預期，請查看 Console', 'error');
+            }
+        } catch (error: any) {
+            console.error('Failed to fetch models:', error);
+            showNotification(`獲取模型列表失敗: ${error.message}`, 'error');
+        } finally {
+            setIsFetchingModels(false);
+        }
+    };
+
     const handleImportSettings = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
@@ -315,7 +384,7 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                 setVideoProvider(settings.videoModel.provider);
                 if (settings.videoModel.gemini) {
                     setVideoGeminiKey(settings.videoModel.gemini.apiKey);
-                    setVideoGeminiModel(settings.videoModel.gemini.modelName || 'veo-3.1-fast-generate-preview');
+                    setVideoGeminiModel(settings.videoModel.gemini.modelName || 'veo-2.0-generate-preview-001');
                 }
                 if (settings.videoModel.comfyui) {
                     setVideoEndpoint(settings.videoModel.comfyui.endpoint);
@@ -885,7 +954,7 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                             transition: 'all 0.2s'
                                         }}
                                     >
-                                        Google Gemini (Veo 3.1)
+                                        Google Gemini (Veo 3.1) - 目前不可用
                                     </button>
                                     <button
                                         onClick={() => setVideoProvider('comfyui')}
@@ -905,6 +974,23 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                         ComfyUI 工作流
                                     </button>
                                 </div>
+                                {videoProvider === 'gemini' && (
+                                    <div style={{
+                                        marginTop: '12px',
+                                        padding: '12px',
+                                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                                        border: '1px solid rgba(239, 68, 68, 0.2)',
+                                        borderRadius: '8px',
+                                        color: '#ef4444',
+                                        fontSize: '13px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '8px'
+                                    }}>
+                                        <span>⚠️</span>
+                                        <span>注意：目前 Veo 模型 API 暫時無法連線 (404 Not Found)，建議改用 ComfyUI 工作流。</span>
+                                    </div>
+                                )}
                             </div>
 
                             {videoProvider === 'gemini' ? (
@@ -947,8 +1033,48 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                                 cursor: 'pointer'
                                             }}
                                         >
-                                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast (Preview)</option>
+                                            <option value="veo-2.0-generate-preview-001">Veo 2.0 (Preview)</option>
+                                            {availableGeminiModels.filter(m => m !== 'veo-2.0-generate-preview-001').map(model => (
+                                                <option key={model} value={model}>{model}</option>
+                                            ))}
                                         </select>
+                                        <button
+                                            onClick={fetchGoogleModels}
+                                            disabled={isFetchingModels}
+                                            style={{
+                                                marginTop: '8px',
+                                                padding: '8px 16px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: isFetchingModels ? '#666' : '#4a9eff',
+                                                fontSize: '12px',
+                                                cursor: isFetchingModels ? 'not-allowed' : 'pointer',
+                                                transition: 'all 0.2s'
+                                            }}
+                                        >
+                                            {isFetchingModels ? '正在獲取...' : '從 Google 獲取可用模型列表'}
+                                        </button>
+                                        <div style={{ marginTop: '8px' }}>
+                                            <label style={{ display: 'block', marginBottom: '4px', color: '#ccc', fontSize: '12px' }}>
+                                                或手動輸入模型名稱：
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={videoGeminiModel}
+                                                onChange={(e) => setVideoGeminiModel(e.target.value)}
+                                                placeholder="例如：veo-2.0-generate-preview-001"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '8px',
+                                                    backgroundColor: '#2a2a2a',
+                                                    border: '1px solid #333',
+                                                    borderRadius: '6px',
+                                                    color: '#fff',
+                                                    fontSize: '13px'
+                                                }}
+                                            />
+                                        </div>
                                     </div>
                                 </>
                             ) : (
@@ -957,149 +1083,149 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                         <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
                                             ComfyUI 端點
                                         </label>
-                                <input
-                                    type="text"
-                                    value={videoEndpoint}
-                                    onChange={(e) => setVideoEndpoint(e.target.value)}
-                                    placeholder="http://127.0.0.1:8188"
-                                    style={{
-                                        width: '100%',
-                                        padding: '12px',
-                                        backgroundColor: '#2a2a2a',
-                                        border: '1px solid #333',
-                                        borderRadius: '6px',
-                                        color: '#fff',
-                                        fontSize: '14px'
-                                    }}
-                                />
-                            </div>
-                            <div style={{ marginBottom: '20px' }}>
-                                <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                    工作流檔案名稱
-                                </label>
-                                <input
-                                    type="text"
-                                    value={videoWorkflow}
-                                    onChange={(e) => setVideoWorkflow(e.target.value)}
-                                    placeholder="WanSE.json"
-                                    style={{
-                                        width: '100%',
-                                        padding: '12px',
-                                        backgroundColor: '#2a2a2a',
-                                        border: '1px solid #333',
-                                        borderRadius: '6px',
-                                        color: '#fff',
-                                        fontSize: '14px'
-                                    }}
-                                />
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
-                                <div>
-                                    <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                        起始幀節點編號
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={videoStartFrameNode}
-                                        onChange={(e) => setVideoStartFrameNode(e.target.value)}
-                                        placeholder="68"
-                                        style={{
-                                            width: '100%',
-                                            padding: '12px',
-                                            backgroundColor: '#2a2a2a',
-                                            border: '1px solid #333',
-                                            borderRadius: '6px',
-                                            color: '#fff',
-                                            fontSize: '14px'
-                                        }}
-                                    />
-                                </div>
-                                <div>
-                                    <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                        結束幀節點編號
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={videoEndFrameNode}
-                                        onChange={(e) => setVideoEndFrameNode(e.target.value)}
-                                        placeholder="62"
-                                        style={{
-                                            width: '100%',
-                                            padding: '12px',
-                                            backgroundColor: '#2a2a2a',
-                                            border: '1px solid #333',
-                                            borderRadius: '6px',
-                                            color: '#fff',
-                                            fontSize: '14px'
-                                        }}
-                                    />
-                                </div>
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
-                                <div>
-                                    <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                        提示詞節點編號
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={videoPromptNode}
-                                        onChange={(e) => setVideoPromptNode(e.target.value)}
-                                        placeholder="6"
-                                        style={{
-                                            width: '100%',
-                                            padding: '12px',
-                                            backgroundColor: '#2a2a2a',
-                                            border: '1px solid #333',
-                                            borderRadius: '6px',
-                                            color: '#fff',
-                                            fontSize: '14px'
-                                        }}
-                                    />
-                                </div>
-                                <div>
-                                    <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                        儲存影片節點編號
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={videoSaveNode}
-                                        onChange={(e) => setVideoSaveNode(e.target.value)}
-                                        placeholder="107"
-                                        style={{
-                                            width: '100%',
-                                            padding: '12px',
-                                            backgroundColor: '#2a2a2a',
-                                            border: '1px solid #333',
-                                            borderRadius: '6px',
-                                            color: '#fff',
-                                            fontSize: '14px'
-                                        }}
-                                    />
-                                </div>
-                            </div>
-                            <div style={{ marginBottom: '20px' }}>
-                                <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                    影片解析度
-                                </label>
-                                <input
-                                    type="number"
-                                    value={videoResolution}
-                                    onChange={(e) => setVideoResolution(parseInt(e.target.value) || 512)}
-                                    placeholder="512"
-                                    style={{
-                                        width: '100%',
-                                        padding: '12px',
-                                        backgroundColor: '#2a2a2a',
-                                        border: '1px solid #333',
-                                        borderRadius: '6px',
-                                        color: '#fff',
-                                        fontSize: '14px'
-                                    }}
-                                />
-                                <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
-                                    此數值將用於替換工作流中的解析度設定
-                                </div>
-                            </div>
+                                        <input
+                                            type="text"
+                                            value={videoEndpoint}
+                                            onChange={(e) => setVideoEndpoint(e.target.value)}
+                                            placeholder="http://127.0.0.1:8188"
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px'
+                                            }}
+                                        />
+                                    </div>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            工作流檔案名稱
+                                        </label>
+                                        <input
+                                            type="text"
+                                            value={videoWorkflow}
+                                            onChange={(e) => setVideoWorkflow(e.target.value)}
+                                            placeholder="WanSE.json"
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px'
+                                            }}
+                                        />
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                                起始幀節點編號
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={videoStartFrameNode}
+                                                onChange={(e) => setVideoStartFrameNode(e.target.value)}
+                                                placeholder="68"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '12px',
+                                                    backgroundColor: '#2a2a2a',
+                                                    border: '1px solid #333',
+                                                    borderRadius: '6px',
+                                                    color: '#fff',
+                                                    fontSize: '14px'
+                                                }}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                                結束幀節點編號
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={videoEndFrameNode}
+                                                onChange={(e) => setVideoEndFrameNode(e.target.value)}
+                                                placeholder="62"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '12px',
+                                                    backgroundColor: '#2a2a2a',
+                                                    border: '1px solid #333',
+                                                    borderRadius: '6px',
+                                                    color: '#fff',
+                                                    fontSize: '14px'
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                                提示詞節點編號
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={videoPromptNode}
+                                                onChange={(e) => setVideoPromptNode(e.target.value)}
+                                                placeholder="6"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '12px',
+                                                    backgroundColor: '#2a2a2a',
+                                                    border: '1px solid #333',
+                                                    borderRadius: '6px',
+                                                    color: '#fff',
+                                                    fontSize: '14px'
+                                                }}
+                                            />
+                                        </div>
+                                        <div>
+                                            <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                                儲存影片節點編號
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={videoSaveNode}
+                                                onChange={(e) => setVideoSaveNode(e.target.value)}
+                                                placeholder="107"
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '12px',
+                                                    backgroundColor: '#2a2a2a',
+                                                    border: '1px solid #333',
+                                                    borderRadius: '6px',
+                                                    color: '#fff',
+                                                    fontSize: '14px'
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            影片解析度
+                                        </label>
+                                        <input
+                                            type="number"
+                                            value={videoResolution}
+                                            onChange={(e) => setVideoResolution(parseInt(e.target.value) || 512)}
+                                            placeholder="512"
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px'
+                                            }}
+                                        />
+                                        <div style={{ marginTop: '6px', fontSize: '12px', color: '#666' }}>
+                                            此數值將用於替換工作流中的解析度設定
+                                        </div>
+                                    </div>
                                 </>
                             )}
 
@@ -1115,7 +1241,7 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                 </div>
                                 <div style={{ color: '#999', fontSize: '13px', lineHeight: '1.6' }}>
                                     {videoProvider === 'gemini'
-                                        ? '影片模型使用 Google Gemini Veo 3.1，根據起始圖片、結束圖片及提示詞生成流暢的過渡影片。Veo 3.1 是 Google 最新的影片生成模型，能夠理解圖片之間的關係並生成自然的動態過渡。'
+                                        ? '影片模型使用 Google Gemini Veo，根據起始圖片、結束圖片及提示詞生成流暢的過渡影片。Veo 是 Google 最新的影片生成模型，能夠理解圖片之間的關係並生成自然的動態過渡。'
                                         : '影片模型使用 ComfyUI 工作流，根據起始圖片、結束圖片及提示詞生成過渡影片。系統會自動替換工作流中對應節點的數值。'
                                     }
                                 </div>

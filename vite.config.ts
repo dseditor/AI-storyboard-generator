@@ -26,6 +26,21 @@ export default defineConfig(({ mode }) => {
                 console.log('Proxying:', req.method, req.url, '→', proxyReq.path);
               });
             }
+          },
+          // Proxy Google Generative Language API to avoid CORS
+          '/google-api': {
+            target: 'https://generativelanguage.googleapis.com',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/google-api/, ''),
+            secure: true,
+            configure: (proxy, _options) => {
+              proxy.on('error', (err, _req, _res) => {
+                console.log('Google API Proxy error:', err);
+              });
+              proxy.on('proxyReq', (proxyReq, req, _res) => {
+                console.log('Proxying Google API:', req.method, req.url);
+              });
+            }
           }
         }
       },

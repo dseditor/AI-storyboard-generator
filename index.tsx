@@ -1062,7 +1062,7 @@ const App = () => {
             return;
         }
 
-        const failedImages: Array<{index: number, error: string}> = [];
+        const failedImages: Array<{ index: number, error: string }> = [];
         const affectedVideos = new Set<number>();
 
         try {
@@ -1295,35 +1295,63 @@ const App = () => {
         return result.name || filename;
     };
 
-    // Generate video using Gemini Veo 3.1
-    const generateVideoWithVeo31 = async (startImage: string, endImage: string | null, videoPrompt: string): Promise<string> => {
+    // Generate video using Gemini Veo (supports 2.0 and 3.1+)
+    const generateVideoWithGemini = async (startImage: string, endImage: string | null, videoPrompt: string): Promise<string> => {
         const veoConfig = modelSettings.videoModel.gemini;
         if (!veoConfig?.apiKey) {
             throw new Error('請在模型管理中設定 Gemini API 金鑰');
         }
 
-        console.log('[Veo 3.1] 開始生成影片...');
-        console.log('[Veo 3.1] 提示詞:', videoPrompt);
+        console.log('[Gemini Veo] 開始生成影片...');
+        console.log('[Gemini Veo] 提示詞:', videoPrompt);
 
         try {
-            // Convert base64 images to blobs and prepare for upload
-            const startImageBlob = await fetch(startImage).then(r => r.blob());
-            const startImageData = await startImageBlob.arrayBuffer();
-            const startImageBase64 = btoa(String.fromCharCode(...new Uint8Array(startImageData)));
+            // Extract base64 data from data URLs
+            const startImageBase64 = startImage.split(',')[1];
 
             let endImageBase64 = null;
             if (endImage) {
-                const endImageBlob = await fetch(endImage).then(r => r.blob());
-                const endImageData = await endImageBlob.arrayBuffer();
-                endImageBase64 = btoa(String.fromCharCode(...new Uint8Array(endImageData)));
+                endImageBase64 = endImage.split(',')[1];
             }
 
-            const modelName = veoConfig.modelName || 'veo-3.1-fast-generate-preview';
+            const modelName = veoConfig.modelName || 'veo-2.0-generate-preview-001';
             const apiKey = veoConfig.apiKey;
 
-            // Call Veo 3.1 API using REST
+            // Call Veo API using REST
+            // Note: Veo 2.0 and newer models might use different payload structures
+            // This implementation targets the v1beta/models/{model}:generateVideos endpoint
+
             const requestBody: any = {
-                model: `models/${modelName}`,
+                prompt: videoPrompt,
+                image: {
+                    image: {
+                        imageBytes: startImageBase64
+                    }
+                }
+            };
+
+            if (endImageBase64) {
+                requestBody.lastFrame = {
+                    image: {
+                        imageBytes: endImageBase64
+                    }
+                };
+            }
+
+            // Some models might expect 'inlineData' instead of 'imageBytes' or different nesting
+            // Let's try the standard format documented for Veo
+            // If the model is specifically 'veo-3.1-fast-generate-preview' or similar, it might need adjustments
+            // But typically Google's API tries to be consistent. 
+            // Let's stick to the structure that worked for Veo 2.0 first, but be ready to adjust.
+
+            // Alternative structure if the above fails (common in some Google APIs):
+            // {
+            //   prompt: "...",
+            //   image: { inlineData: { data: "...", mimeType: "image/png" } }
+            // }
+
+            // Let's use the structure that matches the official REST API documentation for generateVideos
+            const payload: any = {
                 prompt: videoPrompt,
                 image: {
                     inlineData: {
@@ -1334,32 +1362,40 @@ const App = () => {
             };
 
             if (endImageBase64) {
-                requestBody.config = {
-                    lastFrame: {
-                        inlineData: {
-                            data: endImageBase64,
-                            mimeType: 'image/png'
-                        }
+                payload.lastFrame = {
+                    inlineData: {
+                        data: endImageBase64,
+                        mimeType: 'image/png'
                     }
                 };
             }
 
-            console.log('[Veo 3.1] 發送生成請求...');
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateVideos?key=${apiKey}`, {
+            console.log(`[Gemini Veo] 使用模型: ${modelName}`);
+            console.log('[Gemini Veo] 發送生成請求...');
+
+            // Use x-goog-api-key header for authentication
+            const response = await fetch(`/google-api/v1beta/models/${modelName}:generateVideos`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'x-goog-api-key': apiKey
                 },
-                body: JSON.stringify(requestBody)
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Veo 3.1 API 請求失敗: ${response.status} - ${errorText}`);
+                let errorText = await response.text();
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    errorText = JSON.stringify(errorJson, null, 2);
+                } catch (e) {
+                    // ignore json parse error
+                }
+                throw new Error(`Gemini Veo API 請求失敗: ${response.status}\n${errorText}`);
             }
 
             const operationData = await response.json();
-            console.log('[Veo 3.1] 操作已啟動:', operationData);
+            console.log('[Gemini Veo] 操作已啟動:', operationData);
 
             // Poll for completion
             const operationName = operationData.name;
@@ -1367,7 +1403,7 @@ const App = () => {
                 throw new Error('未收到操作名稱');
             }
 
-            console.log('[Veo 3.1] 等待影片生成完成...');
+            console.log('[Gemini Veo] 等待影片生成完成...');
             let attempts = 0;
             const maxAttempts = 360; // 60 minutes at 10 second intervals
 
@@ -1375,33 +1411,51 @@ const App = () => {
                 await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
                 attempts++;
 
-                console.log(`[Veo 3.1] 檢查進度 (${attempts}/${maxAttempts})...`);
+                console.log(`[Gemini Veo] 檢查進度 (${attempts}/${maxAttempts})...`);
 
                 // Check operation status
-                const statusResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${apiKey}`);
+                const statusResponse = await fetch(`/google-api/v1beta/${operationName}`, {
+                    headers: {
+                        'x-goog-api-key': apiKey
+                    }
+                });
 
                 if (!statusResponse.ok) {
-                    console.warn('[Veo 3.1] 狀態檢查失敗，重試中...');
+                    console.warn('[Gemini Veo] 狀態檢查失敗，重試中...');
                     continue;
                 }
 
                 const statusData = await statusResponse.json();
-                console.log('[Veo 3.1] 狀態:', statusData);
+                console.log('[Gemini Veo] 狀態:', statusData);
 
                 if (statusData.done) {
                     if (statusData.error) {
-                        throw new Error(`Veo 3.1 生成失敗: ${JSON.stringify(statusData.error)}`);
+                        throw new Error(`Gemini Veo 生成失敗: ${JSON.stringify(statusData.error)}`);
                     }
 
                     // Video generation completed
                     if (statusData.response?.generatedVideos && statusData.response.generatedVideos.length > 0) {
                         const videoData = statusData.response.generatedVideos[0];
-                        console.log('[Veo 3.1] 影片生成完成！');
+                        console.log('[Gemini Veo] 影片生成完成！');
 
                         // Download video
                         if (videoData.video?.uri) {
-                            console.log('[Veo 3.1] 下載影片:', videoData.video.uri);
-                            const videoResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${videoData.video.uri.replace('https://generativelanguage.googleapis.com/v1beta/', '')}?key=${apiKey}`);
+                            console.log('[Gemini Veo] 下載影片:', videoData.video.uri);
+
+                            // The URI might be a full URL or a relative path
+                            let downloadUrl = videoData.video.uri;
+                            if (downloadUrl.startsWith('https://generativelanguage.googleapis.com/v1beta/')) {
+                                downloadUrl = '/google-api/v1beta/' + downloadUrl.replace('https://generativelanguage.googleapis.com/v1beta/', '');
+                            } else if (!downloadUrl.startsWith('http')) {
+                                // Assuming it's a relative path from the API root
+                                downloadUrl = `/google-api/v1beta/${downloadUrl}`;
+                            }
+
+                            const videoResponse = await fetch(downloadUrl, {
+                                headers: {
+                                    'x-goog-api-key': apiKey
+                                }
+                            });
 
                             if (!videoResponse.ok) {
                                 throw new Error('影片下載失敗');
@@ -1420,7 +1474,7 @@ const App = () => {
                             link.click();
                             document.body.removeChild(link);
 
-                            console.log('[Veo 3.1] 影片已保存到本地');
+                            console.log('[Gemini Veo] 影片已保存到本地');
                             return videoUrl;
                         } else {
                             throw new Error('影片數據中未找到 URI');
@@ -1436,7 +1490,7 @@ const App = () => {
             throw new Error('影片生成超時（60分鐘）');
 
         } catch (error: any) {
-            console.error('[Veo 3.1] 錯誤:', error);
+            console.error('[Gemini Veo] 錯誤:', error);
             throw error;
         }
     };
@@ -1446,7 +1500,7 @@ const App = () => {
         const provider = modelSettings.videoModel.provider;
 
         if (provider === 'gemini') {
-            return await generateVideoWithVeo31(startImage, endImage, videoPrompt);
+            return await generateVideoWithGemini(startImage, endImage, videoPrompt);
         } else if (provider === 'comfyui') {
             return await generateVideoWithComfyUI(startImage, endImage, videoPrompt);
         } else {
@@ -1917,7 +1971,7 @@ const App = () => {
         const preservedVideoBlobUrls = mode === 'all' ? Array(storyboard.length).fill('') : [...videoBlobUrls];
         const preservedVideoVersions = mode === 'all' ? Array(storyboard.length).fill(0) : [...videoVersions];
         const currentGeneratedVideos: string[] = mode === 'all' ? Array(storyboard.length).fill('') : [...generatedVideos];
-        const failedVideos: Array<{index: number, error: string}> = [];
+        const failedVideos: Array<{ index: number, error: string }> = [];
 
         try {
             console.log(`Starting video generation for ${indicesToGenerate.length} videos...`);
@@ -1931,14 +1985,14 @@ const App = () => {
                 if (!currentCut.generated_image) {
                     const error = `Cut ${i + 1} image not generated yet`;
                     console.error(`✗ Video ${i + 1} failed:`, error);
-                    failedVideos.push({index: i + 1, error});
+                    failedVideos.push({ index: i + 1, error });
                     continue; // Continue to next video
                 }
 
                 if (!isLastCut && !nextCut?.generated_image) {
                     const error = `Cut ${i + 2} image not generated yet`;
                     console.error(`✗ Video ${i + 1} failed:`, error);
-                    failedVideos.push({index: i + 1, error});
+                    failedVideos.push({ index: i + 1, error });
                     continue; // Continue to next video
                 }
 
@@ -1987,7 +2041,7 @@ const App = () => {
 
                 } catch (videoError: any) {
                     console.error(`✗ Video ${i + 1} failed:`, videoError);
-                    failedVideos.push({index: i + 1, error: videoError.message});
+                    failedVideos.push({ index: i + 1, error: videoError.message });
                     setVideoProgress(`Video ${i + 1} failed, continuing to next...`);
 
                     // Continue to next video even if this one failed
@@ -2019,7 +2073,7 @@ const App = () => {
             console.log('\n' + message);
             if (failureCount > 0) {
                 console.log('失败的影片：');
-                failedVideos.forEach(({index, error}) => {
+                failedVideos.forEach(({ index, error }) => {
                     console.log(`  - 影片 ${index}: ${error}`);
                 });
             }
@@ -2035,7 +2089,7 @@ const App = () => {
 
             // Show detailed failure information if any videos failed
             if (failureCount > 0) {
-                const failedList = failedVideos.map(({index, error}) => `影片 ${index}: ${error}`).join('\n');
+                const failedList = failedVideos.map(({ index, error }) => `影片 ${index}: ${error}`).join('\n');
                 setError(`以下影片生成失败：\n${failedList}`);
             }
 
@@ -2091,7 +2145,7 @@ const App = () => {
 
                 // Draw the cropped portion of the image onto the canvas
                 ctx.drawImage(img, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
-                
+
                 resolve(canvas.toDataURL('image/png'));
             };
             img.onerror = () => reject(new Error("無法載入圖片以進行裁切。"));
@@ -2969,7 +3023,7 @@ const App = () => {
             let imagePromptStyleInstruction = `風格要求為具有真實感的 "Raw photo"，請強調自然光影、細膩紋理與電影感。`;
             let modeSpecificInstruction = '';
 
-            switch(generationMode) {
+            switch (generationMode) {
                 case 'character_closeup':
                     modeSpecificInstruction = `**模式: 人物特寫** - 為每個鏡頭生成一個專注於角色臉部表情、情緒或與產品互動的特寫描述。請多使用「特寫」、「中景特寫」、「眼神專注於...」等攝影術語。`;
                     break;
@@ -3224,7 +3278,7 @@ ${videoModelConstraintInstruction}
             setLoadingMessage('');
         }
     };
-    
+
     const handleImageUpload = (file: File) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -3244,7 +3298,7 @@ ${videoModelConstraintInstruction}
     const handleAspectRatioChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setAspectRatio(e.target.value);
     };
-    
+
     const base64ToBlob = async (base64: string, type = 'image/png') => {
         const res = await fetch(base64);
         return await res.blob();
@@ -3331,21 +3385,21 @@ ${videoModelConstraintInstruction}
                                     onChange={(e) => setProjectName(e.target.value)}
                                     placeholder="輸入專案名稱（用於儲存檔名）"
                                 />
-                                <small style={{color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px'}}>
+                                <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px' }}>
                                     儲存專案時將使用此名稱作為檔名，留空則使用時間戳記
                                 </small>
                             </div>
                             <div className="form-group">
-                                <label style={{display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer'}}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
                                     <input
                                         type="checkbox"
                                         checked={saveVideosInProject}
                                         onChange={(e) => setSaveVideosInProject(e.target.checked)}
-                                        style={{cursor: 'pointer'}}
+                                        style={{ cursor: 'pointer' }}
                                     />
                                     <span>儲存影片專案時包含影片檔案</span>
                                 </label>
-                                <small style={{color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px', marginLeft: '30px'}}>
+                                <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px', marginLeft: '30px' }}>
                                     ⚠️ 如果不勾選，將只儲存 ComfyUI URL 路徑。注意：URL 可能會在 ComfyUI 重啟後失效。
                                 </small>
                             </div>
@@ -3356,29 +3410,29 @@ ${videoModelConstraintInstruction}
                                 borderLeft: '4px solid #4a9eff',
                                 marginTop: '20px'
                             }}>
-                                <div style={{color: '#4a9eff', fontSize: '14px', fontWeight: 600, marginBottom: '8px'}}>
+                                <div style={{ color: '#4a9eff', fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>
                                     💡 提示
                                 </div>
-                                <div style={{color: '#999', fontSize: '13px', lineHeight: '1.6'}}>
-                                    需要配置 API 金鑰或模型設定嗎？請點擊右上角的 <strong style={{color: '#fff'}}>🤖 模型管理</strong> 按鈕。
+                                <div style={{ color: '#999', fontSize: '13px', lineHeight: '1.6' }}>
+                                    需要配置 API 金鑰或模型設定嗎？請點擊右上角的 <strong style={{ color: '#fff' }}>🤖 模型管理</strong> 按鈕。
                                 </div>
                             </div>
 
                             {/* Preset Management */}
-                            <div className="form-group" style={{marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #444'}}>
-                                <label style={{fontSize: '1.1em', fontWeight: 'bold', marginBottom: '10px'}}>設定範本管理</label>
-                                <div style={{display: 'flex', gap: '10px', marginBottom: '10px'}}>
+                            <div className="form-group" style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #444' }}>
+                                <label style={{ fontSize: '1.1em', fontWeight: 'bold', marginBottom: '10px' }}>設定範本管理</label>
+                                <div style={{ display: 'flex', gap: '10px', marginBottom: '10px' }}>
                                     <button className="btn btn-secondary" onClick={() => setShowPresetModal(true)}>
                                         💾 儲存為範本
                                     </button>
                                 </div>
 
                                 {savedPresets.length > 0 && (
-                                    <div style={{marginTop: '15px'}}>
-                                        <small style={{color: '#888', display: 'block', marginBottom: '8px'}}>
+                                    <div style={{ marginTop: '15px' }}>
+                                        <small style={{ color: '#888', display: 'block', marginBottom: '8px' }}>
                                             已儲存的範本 ({savedPresets.length}):
                                         </small>
-                                        <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                             {savedPresets.map((preset, index) => (
                                                 <div key={index} style={{
                                                     display: 'flex',
@@ -3389,23 +3443,23 @@ ${videoModelConstraintInstruction}
                                                     borderRadius: '4px'
                                                 }}>
                                                     <div>
-                                                        <div style={{fontWeight: 'bold'}}>{preset.name}</div>
-                                                        <small style={{color: '#888'}}>
+                                                        <div style={{ fontWeight: 'bold' }}>{preset.name}</div>
+                                                        <small style={{ color: '#888' }}>
                                                             {preset.workflowName} | {preset.videoResolution}p
                                                         </small>
                                                     </div>
-                                                    <div style={{display: 'flex', gap: '5px'}}>
+                                                    <div style={{ display: 'flex', gap: '5px' }}>
                                                         <button
                                                             className="btn btn-small"
                                                             onClick={() => handleLoadPreset(preset)}
-                                                            style={{padding: '4px 8px', fontSize: '0.85em'}}
+                                                            style={{ padding: '4px 8px', fontSize: '0.85em' }}
                                                         >
                                                             載入
                                                         </button>
                                                         <button
                                                             className="btn btn-small"
                                                             onClick={() => handleDeletePreset(index)}
-                                                            style={{padding: '4px 8px', fontSize: '0.85em', backgroundColor: '#d32f2f'}}
+                                                            style={{ padding: '4px 8px', fontSize: '0.85em', backgroundColor: '#d32f2f' }}
                                                         >
                                                             刪除
                                                         </button>
@@ -3527,10 +3581,10 @@ ${videoModelConstraintInstruction}
                     <label htmlFor="load-video-project-input" className="btn btn-secondary" title="支援載入新版和舊版專案">載入專案</label>
 
                     <input type="file" id="append-project-input" accept=".zip" onChange={handleAppendProject} style={{ display: 'none' }} />
-                    <label htmlFor="append-project-input" className="btn btn-secondary" title="追加專案到現有專案之後" style={{display: storyboard.length > 0 ? 'inline-block' : 'none'}}>追加專案</label>
+                    <label htmlFor="append-project-input" className="btn btn-secondary" title="追加專案到現有專案之後" style={{ display: storyboard.length > 0 ? 'inline-block' : 'none' }}>追加專案</label>
                 </div>
             </div>
-            
+
             {error && <div className="error-message">{error}</div>}
 
             {isLoading && (
@@ -3539,9 +3593,9 @@ ${videoModelConstraintInstruction}
                     <p className="loading-message">{loadingMessage}</p>
                 </div>
             )}
-            
+
             {storyboard.length > 0 && !isLoading && (
-                 <div className="result-section">
+                <div className="result-section">
                     <div className="result-header">
                         <div className="video-generation-controls">
                             <button
@@ -3763,9 +3817,9 @@ ${videoModelConstraintInstruction}
                                         <img
                                             src={cut.generated_image}
                                             alt={`Cut ${cut.cut}`}
-                                            style={{ aspectRatio: aspectRatio.replace(':', ' / ')}}
+                                            style={{ aspectRatio: aspectRatio.replace(':', ' / ') }}
                                         /> :
-                                        <div className="image-placeholder" style={{ aspectRatio: aspectRatio.replace(':', ' / ')}}>
+                                        <div className="image-placeholder" style={{ aspectRatio: aspectRatio.replace(':', ' / ') }}>
                                             <span>{isLoading ? '生成中...' : '圖片尚未生成'}</span>
                                         </div>
                                     }
@@ -3814,7 +3868,7 @@ ${videoModelConstraintInstruction}
                                     <img
                                         src={storyboard[detailCutIndex].generated_image}
                                         alt={`Cut ${storyboard[detailCutIndex].cut}`}
-                                        style={{ aspectRatio: aspectRatio.replace(':', ' / ')}}
+                                        style={{ aspectRatio: aspectRatio.replace(':', ' / ') }}
                                     />
                                 </div>
                                 <div className="image-actions">
@@ -3887,7 +3941,7 @@ ${videoModelConstraintInstruction}
                                                     setVideoBlobUrls(prevBlobUrls => {
                                                         const updated = [...prevBlobUrls];
                                                         if (updated[detailCutIndex]?.startsWith('blob:')) {
-                                                            try { URL.revokeObjectURL(updated[detailCutIndex]); } catch (err) {}
+                                                            try { URL.revokeObjectURL(updated[detailCutIndex]); } catch (err) { }
                                                         }
                                                         updated[detailCutIndex] = newBlobUrl;
                                                         return updated;
@@ -3905,7 +3959,7 @@ ${videoModelConstraintInstruction}
                                             Your browser does not support the video tag.
                                         </video>
                                     ) : generatedVideos[detailCutIndex] ? (
-                                        <div style={{padding: '20px', textAlign: 'center', color: '#888'}}>
+                                        <div style={{ padding: '20px', textAlign: 'center', color: '#888' }}>
                                             <p>影片需要載入</p>
                                             <button
                                                 className="btn btn-primary"
@@ -3938,7 +3992,7 @@ ${videoModelConstraintInstruction}
                                     ) : (
                                         <div className="no-video-placeholder">
                                             <p>尚未生成影片</p>
-                                            <p style={{fontSize: '0.9em', color: '#888'}}>請先點擊「生成影片」按鈕</p>
+                                            <p style={{ fontSize: '0.9em', color: '#888' }}>請先點擊「生成影片」按鈕</p>
                                         </div>
                                     )}
                                 </div>
@@ -4063,7 +4117,7 @@ ${videoModelConstraintInstruction}
                                     Your browser does not support the video tag.
                                 </video>
                             ) : (
-                                <div style={{padding: '20px', textAlign: 'center', color: '#888'}}>
+                                <div style={{ padding: '20px', textAlign: 'center', color: '#888' }}>
                                     <p>正在載入影片...</p>
                                     <button
                                         className="btn btn-primary"
@@ -4192,7 +4246,7 @@ ${videoModelConstraintInstruction}
                                     placeholder="請輸入影片生成的詳細描述..."
                                     style={{ width: '100%', padding: '10px', fontSize: '14px' }}
                                 />
-                                <small style={{color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px'}}>
+                                <small style={{ color: '#888', fontSize: '0.85em', display: 'block', marginTop: '5px' }}>
                                     修改提示詞後將重新生成此段影片，並自動重新合併所有影片。
                                 </small>
                             </div>
