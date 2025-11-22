@@ -199,14 +199,29 @@ const App = () => {
             }
 
             const messages = [{ role: 'user', content: prompt }];
+
+            // 如果是 JSON 模式，在 prompt 中明確要求 JSON 格式，而不依賴 response_format
+            // 因為某些 Ollama 版本對 response_format 的支持可能不完整
+            if (options?.jsonMode && !prompt.toLowerCase().includes('json')) {
+                messages[0].content = `請以 JSON 格式回應。\n\n${prompt}`;
+            }
+
             const requestBody: any = {
                 model: config.modelName,
                 messages: messages,
                 temperature: 0.7,
+                max_tokens: 8192, // 增大輸出長度限制，確保能生成完整的多分鏡陣列
+                stream: false, // 明確禁用流式輸出
             };
 
+            // 對於 Ollama，使用 format 參數
+            // 注意：不使用 response_format，因為它會限制輸出為單個物件，
+            // 而我們的提示詞可能要求輸出陣列
+            // 參考：https://github.com/ollama/ollama/blob/main/docs/api.md
             if (options?.jsonMode) {
-                requestBody.response_format = { type: 'json_object' };
+                // 只使用 Ollama 的 format 參數，不限制輸出結構
+                requestBody.format = 'json';  // Ollama 原生參數，支持陣列和物件
+                // 不設置 response_format，避免與提示詞衝突
             }
 
             const headers: any = {
@@ -219,6 +234,10 @@ const App = () => {
 
             console.log('[OpenAI API] 發送請求到:', endpoint, '(原始:', config.endpoint, ')');
             console.log('[OpenAI API] 請求體:', JSON.stringify(requestBody, null, 2));
+            console.log('[OpenAI API] max_tokens 設置:', requestBody.max_tokens);
+            console.log('[OpenAI API] JSON 模式:', options?.jsonMode ? '啟用 (format: json)' : '禁用');
+            console.log('[OpenAI API] response_format:', requestBody.response_format || '未設置');
+            console.log('[OpenAI API] format:', requestBody.format || '未設置');
 
             let response: Response;
             try {
@@ -252,6 +271,28 @@ const App = () => {
             try {
                 data = await response.json();
                 console.log('[OpenAI API] 響應數據:', JSON.stringify(data, null, 2));
+
+                // 檢查 token 使用情況
+                if (data.usage) {
+                    console.log('[OpenAI API] Token 使用統計:');
+                    console.log('  - prompt_tokens:', data.usage.prompt_tokens);
+                    console.log('  - completion_tokens:', data.usage.completion_tokens);
+                    console.log('  - total_tokens:', data.usage.total_tokens);
+
+                    // 警告：如果 completion_tokens 過少
+                    if (data.usage.completion_tokens < 500 && options?.jsonMode) {
+                        console.warn('[OpenAI API] 警告：completion_tokens 過少 (' + data.usage.completion_tokens + ')，可能無法生成完整的多分鏡陣列！');
+                        console.warn('[OpenAI API] 建議檢查 Ollama 的 num_predict 設置或模型配置');
+                    }
+                }
+
+                // 檢查 finish_reason
+                if (data.choices?.[0]?.finish_reason) {
+                    console.log('[OpenAI API] 完成原因:', data.choices[0].finish_reason);
+                    if (data.choices[0].finish_reason === 'length') {
+                        console.warn('[OpenAI API] 警告：響應因長度限制而被截斷！');
+                    }
+                }
             } catch (parseError: any) {
                 const rawText = await response.text();
                 console.error('[OpenAI API] JSON 解析失敗，原始響應:', rawText);
