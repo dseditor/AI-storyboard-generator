@@ -16,7 +16,18 @@
       "Bash(git commit -m \"$(cat <<''EOF''\nAdd in-app notifications and automatic video merging\n\nFeatures:\n- Replace browser alerts with elegant in-app notification toasts\n- Replace window.confirm with custom confirmation dialogs\n- Automatic video merging after all videos are generated\n- Embedded merged video preview with playback controls\n- Download button for merged video\n- Improved UI flow: storyboard -> video generation -> auto-merge -> preview\n\nUI Improvements:\n- Non-blocking notification system with auto-dismiss\n- Success/error/info notification types with animations\n- Custom confirm dialog with better UX\n- Merged video section with highlighted border\n- Better visual feedback throughout the process\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(git add:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nSupport last cut video generation with single-image mode\n\nFeatures:\n- Generate video for all cuts including the last one\n- Last cut uses single-image mode (only start_image, no end_image)\n- Dynamically modify workflow to remove end_image connection for last cut\n- Last cut''s video_prompt is now properly used\n- Video count changes from (n-1) to n videos\n\nTechnical changes:\n- Make endImage parameter optional in generateVideoWithComfyUI\n- When endImage is null, remove node 68 and end_image connection\n- Fix image upload logic for single-image mode (use endFrameNode 62)\n- Update video generation loop to handle all cuts\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(if [ -f README.md ])",
+      "Bash(then echo \"exists\")",
+      "Bash(else echo \"not exists\")",
+      "Bash(fi)",
+      "Bash(git remote add:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(git branch:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []

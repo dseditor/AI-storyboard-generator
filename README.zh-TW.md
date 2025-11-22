@@ -3,6 +3,8 @@
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
 一個強大的 AI 驅動分鏡產生工具，可從文字描述創建包含圖片和影片的視覺分鏡稿。使用 React、Gemini API 和 ComfyUI 整合構建。
+說明大多是ClaudeCode寫的，以下只有基本的功能參考。
+
 
 ## ✨ 功能特色
 

@@ -5,6 +5,7 @@ export interface LanguageModelConfig {
     provider: 'gemini' | 'openai-compatible';
     gemini?: {
         apiKey: string;
+        modelName: string;
     };
     openaiCompatible?: {
         endpoint: string;
@@ -17,6 +18,7 @@ export interface ImageModelConfig {
     provider: 'gemini' | 'comfyui';
     gemini?: {
         apiKey: string;
+        modelName: string;
     };
     comfyui?: {
         endpoint: string;
@@ -29,13 +31,20 @@ export interface ImageModelConfig {
 }
 
 export interface VideoModelConfig {
-    endpoint: string;
-    workflowName: string;
-    startFrameNode: string;
-    endFrameNode: string;
-    promptNode: string;
-    saveVideoNode: string;
-    resolution: number;
+    provider: 'gemini' | 'comfyui';
+    gemini?: {
+        apiKey: string;
+        modelName: string;
+    };
+    comfyui?: {
+        endpoint: string;
+        workflowName: string;
+        startFrameNode: string;
+        endFrameNode: string;
+        promptNode: string;
+        saveVideoNode: string;
+        resolution: number;
+    };
 }
 
 export interface ModelSettings {
@@ -60,6 +69,9 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
     const [languageGeminiKey, setLanguageGeminiKey] = useState(
         currentSettings?.languageModel.gemini?.apiKey || ''
     );
+    const [languageGeminiModel, setLanguageGeminiModel] = useState(
+        currentSettings?.languageModel.gemini?.modelName || 'gemini-2.5-flash'
+    );
     const [languageOpenAIEndpoint, setLanguageOpenAIEndpoint] = useState(
         currentSettings?.languageModel.openaiCompatible?.endpoint || 'http://localhost:11434/v1/chat/completions'
     );
@@ -75,6 +87,9 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
     );
     const [imageGeminiKey, setImageGeminiKey] = useState(
         currentSettings?.imageModel.gemini?.apiKey || ''
+    );
+    const [imageGeminiModel, setImageGeminiModel] = useState(
+        currentSettings?.imageModel.gemini?.modelName || 'gemini-2.5-flash-image'
     );
     const [imageComfyUIEndpoint, setImageComfyUIEndpoint] = useState(
         currentSettings?.imageModel.comfyui?.endpoint || 'http://127.0.0.1:8188'
@@ -95,26 +110,35 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
         currentSettings?.imageModel.comfyui?.resolution || 1280
     );
 
+    const [videoProvider, setVideoProvider] = useState<'gemini' | 'comfyui'>(
+        currentSettings?.videoModel.provider || 'comfyui'
+    );
+    const [videoGeminiKey, setVideoGeminiKey] = useState(
+        currentSettings?.videoModel.gemini?.apiKey || ''
+    );
+    const [videoGeminiModel, setVideoGeminiModel] = useState(
+        currentSettings?.videoModel.gemini?.modelName || 'veo-3.1-fast-generate-preview'
+    );
     const [videoEndpoint, setVideoEndpoint] = useState(
-        currentSettings?.videoModel.endpoint || 'http://127.0.0.1:8188'
+        currentSettings?.videoModel.comfyui?.endpoint || 'http://127.0.0.1:8188'
     );
     const [videoWorkflow, setVideoWorkflow] = useState(
-        currentSettings?.videoModel.workflowName || 'WanSE.json'
+        currentSettings?.videoModel.comfyui?.workflowName || 'WanSE.json'
     );
     const [videoStartFrameNode, setVideoStartFrameNode] = useState(
-        currentSettings?.videoModel.startFrameNode || '68'
+        currentSettings?.videoModel.comfyui?.startFrameNode || '68'
     );
     const [videoEndFrameNode, setVideoEndFrameNode] = useState(
-        currentSettings?.videoModel.endFrameNode || '62'
+        currentSettings?.videoModel.comfyui?.endFrameNode || '62'
     );
     const [videoPromptNode, setVideoPromptNode] = useState(
-        currentSettings?.videoModel.promptNode || '6'
+        currentSettings?.videoModel.comfyui?.promptNode || '6'
     );
     const [videoSaveNode, setVideoSaveNode] = useState(
-        currentSettings?.videoModel.saveVideoNode || '107'
+        currentSettings?.videoModel.comfyui?.saveVideoNode || '107'
     );
     const [videoResolution, setVideoResolution] = useState(
-        currentSettings?.videoModel.resolution || 512
+        currentSettings?.videoModel.comfyui?.resolution || 512
     );
 
     const [notification, setNotification] = useState<{ message: string, type: 'success' | 'error' | 'info' } | null>(null);
@@ -129,7 +153,10 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
             languageModel: {
                 provider: languageProvider,
                 ...(languageProvider === 'gemini' ? {
-                    gemini: { apiKey: languageGeminiKey }
+                    gemini: {
+                        apiKey: languageGeminiKey,
+                        modelName: languageGeminiModel
+                    }
                 } : {
                     openaiCompatible: {
                         endpoint: languageOpenAIEndpoint,
@@ -141,7 +168,10 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
             imageModel: {
                 provider: imageProvider,
                 ...(imageProvider === 'gemini' ? {
-                    gemini: { apiKey: imageGeminiKey }
+                    gemini: {
+                        apiKey: imageGeminiKey,
+                        modelName: imageGeminiModel
+                    }
                 } : {
                     comfyui: {
                         endpoint: imageComfyUIEndpoint,
@@ -154,13 +184,23 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                 })
             },
             videoModel: {
-                endpoint: videoEndpoint,
-                workflowName: videoWorkflow,
-                startFrameNode: videoStartFrameNode,
-                endFrameNode: videoEndFrameNode,
-                promptNode: videoPromptNode,
-                saveVideoNode: videoSaveNode,
-                resolution: videoResolution
+                provider: videoProvider,
+                ...(videoProvider === 'gemini' ? {
+                    gemini: {
+                        apiKey: videoGeminiKey,
+                        modelName: videoGeminiModel
+                    }
+                } : {
+                    comfyui: {
+                        endpoint: videoEndpoint,
+                        workflowName: videoWorkflow,
+                        startFrameNode: videoStartFrameNode,
+                        endFrameNode: videoEndFrameNode,
+                        promptNode: videoPromptNode,
+                        saveVideoNode: videoSaveNode,
+                        resolution: videoResolution
+                    }
+                })
             }
         };
 
@@ -173,7 +213,10 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
             languageModel: {
                 provider: languageProvider,
                 ...(languageProvider === 'gemini' ? {
-                    gemini: { apiKey: languageGeminiKey }
+                    gemini: {
+                        apiKey: languageGeminiKey,
+                        modelName: languageGeminiModel
+                    }
                 } : {
                     openaiCompatible: {
                         endpoint: languageOpenAIEndpoint,
@@ -185,7 +228,10 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
             imageModel: {
                 provider: imageProvider,
                 ...(imageProvider === 'gemini' ? {
-                    gemini: { apiKey: imageGeminiKey }
+                    gemini: {
+                        apiKey: imageGeminiKey,
+                        modelName: imageGeminiModel
+                    }
                 } : {
                     comfyui: {
                         endpoint: imageComfyUIEndpoint,
@@ -198,13 +244,23 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                 })
             },
             videoModel: {
-                endpoint: videoEndpoint,
-                workflowName: videoWorkflow,
-                startFrameNode: videoStartFrameNode,
-                endFrameNode: videoEndFrameNode,
-                promptNode: videoPromptNode,
-                saveVideoNode: videoSaveNode,
-                resolution: videoResolution
+                provider: videoProvider,
+                ...(videoProvider === 'gemini' ? {
+                    gemini: {
+                        apiKey: videoGeminiKey,
+                        modelName: videoGeminiModel
+                    }
+                } : {
+                    comfyui: {
+                        endpoint: videoEndpoint,
+                        workflowName: videoWorkflow,
+                        startFrameNode: videoStartFrameNode,
+                        endFrameNode: videoEndFrameNode,
+                        promptNode: videoPromptNode,
+                        saveVideoNode: videoSaveNode,
+                        resolution: videoResolution
+                    }
+                })
             }
         };
 
@@ -232,6 +288,7 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                 setLanguageProvider(settings.languageModel.provider);
                 if (settings.languageModel.gemini) {
                     setLanguageGeminiKey(settings.languageModel.gemini.apiKey);
+                    setLanguageGeminiModel(settings.languageModel.gemini.modelName || 'gemini-2.5-flash');
                 }
                 if (settings.languageModel.openaiCompatible) {
                     setLanguageOpenAIEndpoint(settings.languageModel.openaiCompatible.endpoint);
@@ -243,6 +300,7 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                 setImageProvider(settings.imageModel.provider);
                 if (settings.imageModel.gemini) {
                     setImageGeminiKey(settings.imageModel.gemini.apiKey);
+                    setImageGeminiModel(settings.imageModel.gemini.modelName || 'gemini-2.5-flash-image');
                 }
                 if (settings.imageModel.comfyui) {
                     setImageComfyUIEndpoint(settings.imageModel.comfyui.endpoint);
@@ -254,13 +312,20 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                 }
 
                 // Apply video model settings
-                setVideoEndpoint(settings.videoModel.endpoint);
-                setVideoWorkflow(settings.videoModel.workflowName);
-                setVideoStartFrameNode(settings.videoModel.startFrameNode);
-                setVideoEndFrameNode(settings.videoModel.endFrameNode);
-                setVideoPromptNode(settings.videoModel.promptNode);
-                setVideoSaveNode(settings.videoModel.saveVideoNode);
-                setVideoResolution(settings.videoModel.resolution);
+                setVideoProvider(settings.videoModel.provider);
+                if (settings.videoModel.gemini) {
+                    setVideoGeminiKey(settings.videoModel.gemini.apiKey);
+                    setVideoGeminiModel(settings.videoModel.gemini.modelName || 'veo-3.1-fast-generate-preview');
+                }
+                if (settings.videoModel.comfyui) {
+                    setVideoEndpoint(settings.videoModel.comfyui.endpoint);
+                    setVideoWorkflow(settings.videoModel.comfyui.workflowName);
+                    setVideoStartFrameNode(settings.videoModel.comfyui.startFrameNode);
+                    setVideoEndFrameNode(settings.videoModel.comfyui.endFrameNode);
+                    setVideoPromptNode(settings.videoModel.comfyui.promptNode);
+                    setVideoSaveNode(settings.videoModel.comfyui.saveVideoNode);
+                    setVideoResolution(settings.videoModel.comfyui.resolution);
+                }
 
                 showNotification('設定已匯入', 'success');
             } catch (error) {
@@ -432,26 +497,50 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                             </div>
 
                             {languageProvider === 'gemini' ? (
-                                <div style={{ marginBottom: '20px' }}>
-                                    <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                        Gemini API 金鑰
-                                    </label>
-                                    <input
-                                        type="password"
-                                        value={languageGeminiKey}
-                                        onChange={(e) => setLanguageGeminiKey(e.target.value)}
-                                        placeholder="輸入您的 Gemini API 金鑰"
-                                        style={{
-                                            width: '100%',
-                                            padding: '12px',
-                                            backgroundColor: '#2a2a2a',
-                                            border: '1px solid #333',
-                                            borderRadius: '6px',
-                                            color: '#fff',
-                                            fontSize: '14px'
-                                        }}
-                                    />
-                                </div>
+                                <>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            Gemini API 金鑰
+                                        </label>
+                                        <input
+                                            type="password"
+                                            value={languageGeminiKey}
+                                            onChange={(e) => setLanguageGeminiKey(e.target.value)}
+                                            placeholder="輸入您的 Gemini API 金鑰"
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px'
+                                            }}
+                                        />
+                                    </div>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            語言模型版本
+                                        </label>
+                                        <select
+                                            value={languageGeminiModel}
+                                            onChange={(e) => setLanguageGeminiModel(e.target.value)}
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px',
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                                            <option value="gemini-3-pro-preview">Gemini 3 Pro Preview</option>
+                                        </select>
+                                    </div>
+                                </>
                             ) : (
                                 <>
                                     <div style={{ marginBottom: '20px' }}>
@@ -583,26 +672,50 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                             </div>
 
                             {imageProvider === 'gemini' ? (
-                                <div style={{ marginBottom: '20px' }}>
-                                    <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                        Gemini API 金鑰
-                                    </label>
-                                    <input
-                                        type="password"
-                                        value={imageGeminiKey}
-                                        onChange={(e) => setImageGeminiKey(e.target.value)}
-                                        placeholder="輸入您的 Gemini API 金鑰"
-                                        style={{
-                                            width: '100%',
-                                            padding: '12px',
-                                            backgroundColor: '#2a2a2a',
-                                            border: '1px solid #333',
-                                            borderRadius: '6px',
-                                            color: '#fff',
-                                            fontSize: '14px'
-                                        }}
-                                    />
-                                </div>
+                                <>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            Gemini API 金鑰
+                                        </label>
+                                        <input
+                                            type="password"
+                                            value={imageGeminiKey}
+                                            onChange={(e) => setImageGeminiKey(e.target.value)}
+                                            placeholder="輸入您的 Gemini API 金鑰"
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px'
+                                            }}
+                                        />
+                                    </div>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            圖片模型版本
+                                        </label>
+                                        <select
+                                            value={imageGeminiModel}
+                                            onChange={(e) => setImageGeminiModel(e.target.value)}
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px',
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            <option value="gemini-2.5-flash-image">Gemini 2.5 Flash Image</option>
+                                            <option value="gemini-3-pro-image-preview">Gemini 3 Pro Image Preview</option>
+                                        </select>
+                                    </div>
+                                </>
                             ) : (
                                 <>
                                     <div style={{ marginBottom: '20px' }}>
@@ -752,10 +865,98 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                     {/* Video Model Tab */}
                     {activeTab === 'video' && (
                         <div>
-                            <div style={{ marginBottom: '20px' }}>
-                                <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
-                                    ComfyUI 端點
+                            <div style={{ marginBottom: '24px' }}>
+                                <label style={{ display: 'block', marginBottom: '12px', color: '#ccc', fontSize: '14px', fontWeight: 500 }}>
+                                    選擇影片模型提供者
                                 </label>
+                                <div style={{ display: 'flex', gap: '12px' }}>
+                                    <button
+                                        onClick={() => setVideoProvider('gemini')}
+                                        style={{
+                                            flex: 1,
+                                            padding: '16px',
+                                            backgroundColor: videoProvider === 'gemini' ? '#4a9eff' : '#2a2a2a',
+                                            border: videoProvider === 'gemini' ? '2px solid #4a9eff' : '2px solid #333',
+                                            borderRadius: '8px',
+                                            color: videoProvider === 'gemini' ? '#fff' : '#999',
+                                            fontSize: '14px',
+                                            fontWeight: 500,
+                                            cursor: 'pointer',
+                                            transition: 'all 0.2s'
+                                        }}
+                                    >
+                                        Google Gemini (Veo 3.1)
+                                    </button>
+                                    <button
+                                        onClick={() => setVideoProvider('comfyui')}
+                                        style={{
+                                            flex: 1,
+                                            padding: '16px',
+                                            backgroundColor: videoProvider === 'comfyui' ? '#4a9eff' : '#2a2a2a',
+                                            border: videoProvider === 'comfyui' ? '2px solid #4a9eff' : '2px solid #333',
+                                            borderRadius: '8px',
+                                            color: videoProvider === 'comfyui' ? '#fff' : '#999',
+                                            fontSize: '14px',
+                                            fontWeight: 500,
+                                            cursor: 'pointer',
+                                            transition: 'all 0.2s'
+                                        }}
+                                    >
+                                        ComfyUI 工作流
+                                    </button>
+                                </div>
+                            </div>
+
+                            {videoProvider === 'gemini' ? (
+                                <>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            Gemini API 金鑰
+                                        </label>
+                                        <input
+                                            type="password"
+                                            value={videoGeminiKey}
+                                            onChange={(e) => setVideoGeminiKey(e.target.value)}
+                                            placeholder="輸入您的 Gemini API 金鑰"
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px'
+                                            }}
+                                        />
+                                    </div>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            Veo 模型版本
+                                        </label>
+                                        <select
+                                            value={videoGeminiModel}
+                                            onChange={(e) => setVideoGeminiModel(e.target.value)}
+                                            style={{
+                                                width: '100%',
+                                                padding: '12px',
+                                                backgroundColor: '#2a2a2a',
+                                                border: '1px solid #333',
+                                                borderRadius: '6px',
+                                                color: '#fff',
+                                                fontSize: '14px',
+                                                cursor: 'pointer'
+                                            }}
+                                        >
+                                            <option value="veo-3.1-fast-generate-preview">Veo 3.1 Fast (Preview)</option>
+                                        </select>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div style={{ marginBottom: '20px' }}>
+                                        <label style={{ display: 'block', marginBottom: '8px', color: '#ccc', fontSize: '14px' }}>
+                                            ComfyUI 端點
+                                        </label>
                                 <input
                                     type="text"
                                     value={videoEndpoint}
@@ -899,6 +1100,8 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                     此數值將用於替換工作流中的解析度設定
                                 </div>
                             </div>
+                                </>
+                            )}
 
                             <div style={{
                                 marginTop: '24px',
@@ -911,7 +1114,10 @@ const ModelManagement: React.FC<ModelManagementProps> = ({ onClose, currentSetti
                                     用途說明
                                 </div>
                                 <div style={{ color: '#999', fontSize: '13px', lineHeight: '1.6' }}>
-                                    影片模型使用 ComfyUI 工作流，根據起始圖片、結束圖片及提示詞生成過渡影片。系統會自動替換工作流中對應節點的數值。
+                                    {videoProvider === 'gemini'
+                                        ? '影片模型使用 Google Gemini Veo 3.1，根據起始圖片、結束圖片及提示詞生成流暢的過渡影片。Veo 3.1 是 Google 最新的影片生成模型，能夠理解圖片之間的關係並生成自然的動態過渡。'
+                                        : '影片模型使用 ComfyUI 工作流，根據起始圖片、結束圖片及提示詞生成過渡影片。系統會自動替換工作流中對應節點的數值。'
+                                    }
                                 </div>
                             </div>
                         </div>

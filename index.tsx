@@ -83,20 +83,29 @@ const App = () => {
         return {
             languageModel: {
                 provider: 'gemini',
-                gemini: { apiKey: apiKey }
+                gemini: {
+                    apiKey: apiKey,
+                    modelName: 'gemini-2.5-flash'
+                }
             },
             imageModel: {
                 provider: 'gemini',
-                gemini: { apiKey: apiKey }
+                gemini: {
+                    apiKey: apiKey,
+                    modelName: 'gemini-2.5-flash-image'
+                }
             },
             videoModel: {
-                endpoint: comfyUIUrl,
-                workflowName: workflowName,
-                startFrameNode: startFrameNode,
-                endFrameNode: endFrameNode,
-                promptNode: promptNode,
-                saveVideoNode: saveVideoNode,
-                resolution: videoResolution
+                provider: 'comfyui',
+                comfyui: {
+                    endpoint: comfyUIUrl,
+                    workflowName: workflowName,
+                    startFrameNode: startFrameNode,
+                    endFrameNode: endFrameNode,
+                    promptNode: promptNode,
+                    saveVideoNode: saveVideoNode,
+                    resolution: videoResolution
+                }
             }
         };
     });
@@ -159,8 +168,9 @@ const App = () => {
                 }
             }
 
+            const modelName = langConfig.gemini?.modelName || "gemini-2.5-flash";
             const response = await geminiAI.models.generateContent({
-                model: "gemini-2.5-flash",
+                model: modelName,
                 contents: prompt,
                 config: config
             });
@@ -287,8 +297,9 @@ const App = () => {
                 }
             };
 
+            const modelName = imgConfig.gemini?.modelName || 'gemini-2.5-flash-image';
             const imageResponse = await geminiAI.models.generateContent({
-                model: 'gemini-2.5-flash-image',
+                model: modelName,
                 contents: { parts: [initialImagePart, { text: prompt }] },
                 config: {
                     responseModalities: [Modality.IMAGE],
@@ -680,7 +691,7 @@ const App = () => {
             });
 
             // Generate video
-            const videoUrl = await generateVideoWithComfyUI(
+            const videoUrl = await generateVideo(
                 currentCut.generated_image,
                 nextCut?.generated_image || null,
                 newPrompt
@@ -742,6 +753,140 @@ const App = () => {
             setError(`重新生成影片 ${index + 1} 失敗：${e.message}`);
         } finally {
             setRegeneratingIndex(null);
+        }
+    };
+
+    // Regenerate video prompt for a single cut with improved continuity
+    const regenerateVideoPrompt = async (index: number) => {
+        if (index < 0 || index >= storyboard.length) {
+            showNotification('無效的鏡頭索引', 'error');
+            return;
+        }
+
+        const currentCut = storyboard[index];
+        const nextCut = index < storyboard.length - 1 ? storyboard[index + 1] : null;
+        const isLastCut = (index === storyboard.length - 1);
+
+        if (!currentCut.generated_image) {
+            showNotification(`鏡頭 ${index + 1} 的圖片尚未生成`, 'error');
+            return;
+        }
+
+        if (!isLastCut && !nextCut?.generated_image) {
+            showNotification(`鏡頭 ${index + 2} 的圖片尚未生成`, 'error');
+            return;
+        }
+
+        setIsLoading(true);
+        setLoadingMessage(`正在重新生成鏡頭 ${index + 1} 的影片提示詞...`);
+
+        try {
+            console.log(`\n=== 重新生成影片提示詞 ${index + 1} ===`);
+
+            const currentImagePart = {
+                inlineData: {
+                    data: currentCut.generated_image.split(',')[1],
+                    mimeType: 'image/png',
+                }
+            };
+
+            let nextImagePart = null;
+            if (!isLastCut && nextCut?.generated_image) {
+                nextImagePart = {
+                    inlineData: {
+                        data: nextCut.generated_image.split(',')[1],
+                        mimeType: 'image/png',
+                    }
+                };
+            }
+
+            // Enhanced prompt with continuity logic
+            const videoPromptRequest = isLastCut
+                ? `你是一位專業的影片提示詞生成師。請觀察這張圖片，為它設計一個動態影片提示詞，讓畫面產生自然且豐富的變化。
+
+**連貫性要求（極為重要）:**
+- 這是最後一個鏡頭，請設計一個有力的結束動作或姿態
+- 確保動作完整：如果畫面中有未完成的動作（如攻擊怪物、開門等），必須在這個鏡頭中完成
+- 避免突兀的結束：不要讓動作或情節懸在半空中
+
+**動作與運鏡要求:**
+- 描述畫面中角色或物件的動態變化、表情演變
+- 包含環境效果（如光影、風、粒子等）
+- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭等）
+- 動作必須是單一、清晰且有力的
+
+**輸出:** 只需輸出影片提示詞，使用繁體中文，保持簡潔有力，不要添加任何解釋。`
+                : `你是一位專業的影片提示詞生成師。請觀察這兩張連續的圖片，為它們之間的過渡設計一個動態且連貫的影片提示詞。
+
+**連貫性要求（極為重要）:**
+1. **動作完整性:** 必須完成第一張圖片中的所有動作後，才能開始轉換到第二張圖片的情境
+   - 如果怪物出現在第一張圖片，必須先處理完（打倒/逃離）再切換場景
+   - 如果人物正在執行動作，必須先完成該動作
+
+2. **方向連貫性:** 仔細觀察人物/物體的朝向和位置
+   - 如果兩張圖片中人物都是正面朝向鏡頭，這意味著人物在第一張圖片中往前走，然後轉彎或轉身，最後在第二張圖片中又面向鏡頭
+   - 例如走迷宮：人物從第一個正面位置往前走 → 側身轉彎進入另一條通道 → 繼續往前走被拍到第二個正面位置
+   - 避免不合理的動作：如"人物往前走再轉身回來"這種邏輯錯誤
+
+3. **場景過渡:** 如果場景有變化，必須描述轉換過程
+   - 例如：從室內走出門到室外、從走廊轉入房間等
+   - 確保空間邏輯合理
+
+**動作與運鏡要求:**
+- 描述從第一張圖片到第二張圖片的完整動態過渡過程
+- 包含角色/物件的動作變化、表情演變
+- 包含環境效果（如光影、風、粒子等）
+- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭、平穩橫移等）
+- 動作必須是單一、清晰且有力的
+
+**輸出:** 只需輸出影片提示詞，使用繁體中文，保持簡潔有力，不要添加任何解釋。`;
+
+            let videoPrompt = '';
+
+            if (modelSettings.languageModel.provider === 'gemini') {
+                console.log(`使用 Gemini 重新生成鏡頭 ${index + 1} 的影片提示詞...`);
+                const geminiKey = modelSettings.languageModel.gemini?.apiKey || apiKey;
+                const geminiAI = new GoogleGenAI({ apiKey: geminiKey });
+
+                const parts: any[] = nextImagePart
+                    ? [currentImagePart, nextImagePart, { text: videoPromptRequest }]
+                    : [currentImagePart, { text: videoPromptRequest }];
+
+                const modelName = modelSettings.languageModel.gemini?.modelName || 'gemini-2.5-flash';
+                const videoResponse = await geminiAI.models.generateContent({
+                    model: modelName,
+                    contents: { parts: parts },
+                });
+
+                videoPrompt = videoResponse.text?.trim() || '影片提示詞生成失敗。';
+                console.log(`Gemini 生成成功，長度: ${videoPrompt.length}`);
+            } else {
+                console.log(`使用 OpenAI 相容 API 重新生成鏡頭 ${index + 1} 的影片提示詞...`);
+                const textOnlyPrompt = isLastCut
+                    ? `${videoPromptRequest}\n\n圖片描述：${currentCut.image_prompt}`
+                    : `${videoPromptRequest}\n\n第一張圖片描述：${currentCut.image_prompt}\n第二張圖片描述：${nextCut?.image_prompt || '未知'}`;
+
+                videoPrompt = await callLanguageModel(textOnlyPrompt);
+                videoPrompt = videoPrompt.trim();
+                console.log(`OpenAI 相容 API 生成成功，長度: ${videoPrompt.length}`);
+            }
+
+            // Update storyboard with new prompt
+            setStoryboard(prevStoryboard => {
+                const updated = [...prevStoryboard];
+                updated[index].video_prompt = videoPrompt;
+                return updated;
+            });
+
+            showNotification(`鏡頭 ${index + 1} 的影片提示詞已重新生成`, 'success');
+            console.log(`✓ 影片提示詞重新生成完成`);
+
+        } catch (e: any) {
+            console.error(`影片提示詞重新生成失敗:`, e);
+            showNotification(`重新生成失敗：${e.message}`, 'error');
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
         }
     };
 
@@ -1111,9 +1256,14 @@ const App = () => {
 
     // Load ComfyUI workflow
     const loadWorkflow = async (): Promise<any> => {
+        const comfyConfig = modelSettings.videoModel.comfyui;
+        if (!comfyConfig) {
+            throw new Error('ComfyUI 配置未找到');
+        }
+
         try {
-            const response = await fetch(`./ComfyUI/${workflowName}`);
-            if (!response.ok) throw new Error(`無法載入工作流檔案: ${workflowName}`);
+            const response = await fetch(`./ComfyUI/${comfyConfig.workflowName}`);
+            if (!response.ok) throw new Error(`無法載入工作流檔案: ${comfyConfig.workflowName}`);
             return await response.json();
         } catch (e: any) {
             throw new Error(`載入工作流失敗: ${e.message}`);
@@ -1122,12 +1272,17 @@ const App = () => {
 
     // Convert base64 to blob and upload to ComfyUI
     const uploadImageToComfyUI = async (base64Image: string, filename: string): Promise<string> => {
+        const comfyConfig = modelSettings.videoModel.comfyui;
+        if (!comfyConfig) {
+            throw new Error('ComfyUI 配置未找到');
+        }
+
         const blob = await base64ToBlob(base64Image);
         const formData = new FormData();
         formData.append('image', blob, filename);
         formData.append('overwrite', 'true');
 
-        const response = await fetch(`${comfyUIUrl}/upload/image`, {
+        const response = await fetch(`${comfyConfig.endpoint}/upload/image`, {
             method: 'POST',
             body: formData,
         });
@@ -1140,12 +1295,176 @@ const App = () => {
         return result.name || filename;
     };
 
+    // Generate video using Gemini Veo 3.1
+    const generateVideoWithVeo31 = async (startImage: string, endImage: string | null, videoPrompt: string): Promise<string> => {
+        const veoConfig = modelSettings.videoModel.gemini;
+        if (!veoConfig?.apiKey) {
+            throw new Error('請在模型管理中設定 Gemini API 金鑰');
+        }
+
+        console.log('[Veo 3.1] 開始生成影片...');
+        console.log('[Veo 3.1] 提示詞:', videoPrompt);
+
+        try {
+            // Convert base64 images to blobs and prepare for upload
+            const startImageBlob = await fetch(startImage).then(r => r.blob());
+            const startImageData = await startImageBlob.arrayBuffer();
+            const startImageBase64 = btoa(String.fromCharCode(...new Uint8Array(startImageData)));
+
+            let endImageBase64 = null;
+            if (endImage) {
+                const endImageBlob = await fetch(endImage).then(r => r.blob());
+                const endImageData = await endImageBlob.arrayBuffer();
+                endImageBase64 = btoa(String.fromCharCode(...new Uint8Array(endImageData)));
+            }
+
+            const modelName = veoConfig.modelName || 'veo-3.1-fast-generate-preview';
+            const apiKey = veoConfig.apiKey;
+
+            // Call Veo 3.1 API using REST
+            const requestBody: any = {
+                model: `models/${modelName}`,
+                prompt: videoPrompt,
+                image: {
+                    inlineData: {
+                        data: startImageBase64,
+                        mimeType: 'image/png'
+                    }
+                }
+            };
+
+            if (endImageBase64) {
+                requestBody.config = {
+                    lastFrame: {
+                        inlineData: {
+                            data: endImageBase64,
+                            mimeType: 'image/png'
+                        }
+                    }
+                };
+            }
+
+            console.log('[Veo 3.1] 發送生成請求...');
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateVideos?key=${apiKey}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Veo 3.1 API 請求失敗: ${response.status} - ${errorText}`);
+            }
+
+            const operationData = await response.json();
+            console.log('[Veo 3.1] 操作已啟動:', operationData);
+
+            // Poll for completion
+            const operationName = operationData.name;
+            if (!operationName) {
+                throw new Error('未收到操作名稱');
+            }
+
+            console.log('[Veo 3.1] 等待影片生成完成...');
+            let attempts = 0;
+            const maxAttempts = 360; // 60 minutes at 10 second intervals
+
+            while (attempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+                attempts++;
+
+                console.log(`[Veo 3.1] 檢查進度 (${attempts}/${maxAttempts})...`);
+
+                // Check operation status
+                const statusResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${apiKey}`);
+
+                if (!statusResponse.ok) {
+                    console.warn('[Veo 3.1] 狀態檢查失敗，重試中...');
+                    continue;
+                }
+
+                const statusData = await statusResponse.json();
+                console.log('[Veo 3.1] 狀態:', statusData);
+
+                if (statusData.done) {
+                    if (statusData.error) {
+                        throw new Error(`Veo 3.1 生成失敗: ${JSON.stringify(statusData.error)}`);
+                    }
+
+                    // Video generation completed
+                    if (statusData.response?.generatedVideos && statusData.response.generatedVideos.length > 0) {
+                        const videoData = statusData.response.generatedVideos[0];
+                        console.log('[Veo 3.1] 影片生成完成！');
+
+                        // Download video
+                        if (videoData.video?.uri) {
+                            console.log('[Veo 3.1] 下載影片:', videoData.video.uri);
+                            const videoResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/${videoData.video.uri.replace('https://generativelanguage.googleapis.com/v1beta/', '')}?key=${apiKey}`);
+
+                            if (!videoResponse.ok) {
+                                throw new Error('影片下載失敗');
+                            }
+
+                            const videoBlob = await videoResponse.blob();
+
+                            // Save to local temporary storage
+                            const videoUrl = URL.createObjectURL(videoBlob);
+
+                            // Also save to downloads folder for persistence
+                            const link = document.createElement('a');
+                            link.href = videoUrl;
+                            link.download = `veo_${Date.now()}.mp4`;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+
+                            console.log('[Veo 3.1] 影片已保存到本地');
+                            return videoUrl;
+                        } else {
+                            throw new Error('影片數據中未找到 URI');
+                        }
+                    } else {
+                        throw new Error('未收到生成的影片');
+                    }
+                }
+
+                // Not done yet, continue polling
+            }
+
+            throw new Error('影片生成超時（60分鐘）');
+
+        } catch (error: any) {
+            console.error('[Veo 3.1] 錯誤:', error);
+            throw error;
+        }
+    };
+
+    // Main video generation function that delegates to the appropriate provider
+    const generateVideo = async (startImage: string, endImage: string | null, videoPrompt: string): Promise<string> => {
+        const provider = modelSettings.videoModel.provider;
+
+        if (provider === 'gemini') {
+            return await generateVideoWithVeo31(startImage, endImage, videoPrompt);
+        } else if (provider === 'comfyui') {
+            return await generateVideoWithComfyUI(startImage, endImage, videoPrompt);
+        } else {
+            throw new Error(`未知的影片模型提供者: ${provider}`);
+        }
+    };
+
     // Generate video using ComfyUI
     const generateVideoWithComfyUI = async (startImage: string, endImage: string | null, videoPrompt: string): Promise<string> => {
+        const comfyConfig = modelSettings.videoModel.comfyui;
+        if (!comfyConfig) {
+            throw new Error('請在模型管理中設定 ComfyUI 配置');
+        }
+
         const workflow = await loadWorkflow();
 
         // Update prompt
-        workflow[promptNode].inputs.text = videoPrompt;
+        workflow[comfyConfig.promptNode].inputs.text = videoPrompt;
 
         // Generate random noise seeds for video generation
         const randomSeed1 = Math.floor(Math.random() * 1000000000000000);
@@ -1165,10 +1484,10 @@ const App = () => {
             if (node.inputs) {
                 // Update width and height if they exist and are set to 512
                 if (node.inputs.width === 512) {
-                    node.inputs.width = videoResolution;
+                    node.inputs.width = comfyConfig.resolution;
                 }
                 if (node.inputs.height === 512) {
-                    node.inputs.height = videoResolution;
+                    node.inputs.height = comfyConfig.resolution;
                 }
             }
         });
@@ -1180,13 +1499,13 @@ const App = () => {
             const endImageName = await uploadImageToComfyUI(endImage, `end_${Date.now()}.png`);
             // Note: In workflow, node 62 (endFrameNode) is start_image, node 68 (startFrameNode) is end_image
             // So we need to swap the assignment to match the correct flow: cut i -> cut i+1
-            workflow[endFrameNode].inputs.image = startImageName;   // Node 62 = start_image (cut i)
-            workflow[startFrameNode].inputs.image = endImageName;   // Node 68 = end_image (cut i+1)
+            workflow[comfyConfig.endFrameNode].inputs.image = startImageName;   // Node 62 = start_image (cut i)
+            workflow[comfyConfig.startFrameNode].inputs.image = endImageName;   // Node 68 = end_image (cut i+1)
         } else {
             // Single-image mode (last cut): only upload one image
             // Note: endFrameNode (62) is used as start_image in node 67
             const imageName = await uploadImageToComfyUI(startImage, `start_${Date.now()}.png`);
-            workflow[endFrameNode].inputs.image = imageName;
+            workflow[comfyConfig.endFrameNode].inputs.image = imageName;
 
             // Remove end_image connection and startFrameNode (like WanSE2.json)
             const videoNode = '67'; // WanFirstLastFrameToVideo node
@@ -1194,13 +1513,13 @@ const App = () => {
                 delete workflow[videoNode].inputs.end_image;
             }
             // Remove startFrameNode (68) as it's not needed for single-image mode
-            if (workflow[startFrameNode]) {
-                delete workflow[startFrameNode];
+            if (workflow[comfyConfig.startFrameNode]) {
+                delete workflow[comfyConfig.startFrameNode];
             }
         }
 
         // Queue prompt
-        const promptResponse = await fetch(`${comfyUIUrl}/prompt`, {
+        const promptResponse = await fetch(`${comfyConfig.endpoint}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: workflow }),
@@ -1219,8 +1538,11 @@ const App = () => {
 
     // Alternative method: Check if prompt is still in queue
     const checkQueueStatus = async (promptId: string): Promise<boolean> => {
+        const comfyConfig = modelSettings.videoModel.comfyui;
+        if (!comfyConfig) return false;
+
         try {
-            const queueResponse = await fetch(`${comfyUIUrl}/queue`);
+            const queueResponse = await fetch(`${comfyConfig.endpoint}/queue`);
             if (!queueResponse.ok) return false;
 
             const queueData = await queueResponse.json();
@@ -1237,6 +1559,11 @@ const App = () => {
 
     // Wait for ComfyUI to complete generation
     const waitForCompletion = async (promptId: string): Promise<string> => {
+        const comfyConfig = modelSettings.videoModel.comfyui;
+        if (!comfyConfig) {
+            throw new Error('ComfyUI 配置未找到');
+        }
+
         return new Promise((resolve, reject) => {
             let attempts = 0;
             const maxAttempts = 1800; // 60 minutes at 2 second intervals (suitable for long videos)
@@ -1261,7 +1588,7 @@ const App = () => {
                     }
 
                     // If it was in queue but now it's not, check history
-                    const historyResponse = await fetch(`${comfyUIUrl}/history/${promptId}`);
+                    const historyResponse = await fetch(`${comfyConfig.endpoint}/history/${promptId}`);
                     if (!historyResponse.ok) {
                         console.warn(`History API returned ${historyResponse.status}, retrying...`);
                         return; // Continue polling
@@ -1293,9 +1620,9 @@ const App = () => {
                         console.log('ComfyUI outputs received:', JSON.stringify(outputs, null, 2));
 
                         // Get the output from SaveVideo node
-                        if (outputs[saveVideoNode]) {
-                            const videoData = outputs[saveVideoNode];
-                            console.log(`SaveVideo node (${saveVideoNode}) output:`, JSON.stringify(videoData, null, 2));
+                        if (outputs[comfyConfig.saveVideoNode]) {
+                            const videoData = outputs[comfyConfig.saveVideoNode];
+                            console.log(`SaveVideo node (${comfyConfig.saveVideoNode}) output:`, JSON.stringify(videoData, null, 2));
 
                             // Try multiple possible output formats
                             let videoFilename = null;
@@ -1363,8 +1690,8 @@ const App = () => {
 
                             if (videoFilename) {
                                 const videoUrl = subfolder
-                                    ? `${comfyUIUrl}/view?filename=${videoFilename}&subfolder=${subfolder}&type=output`
-                                    : `${comfyUIUrl}/view?filename=${videoFilename}&type=output`;
+                                    ? `${comfyConfig.endpoint}/view?filename=${videoFilename}&subfolder=${subfolder}&type=output`
+                                    : `${comfyConfig.endpoint}/view?filename=${videoFilename}&type=output`;
                                 console.log('Video URL:', videoUrl);
                                 resolve(videoUrl);
                             } else {
@@ -1527,9 +1854,18 @@ const App = () => {
             return;
         }
 
-        if (!comfyUIUrl || !workflowName) {
-            setError('Please configure ComfyUI parameters in settings first');
-            return;
+        if (modelSettings.videoModel.provider === 'comfyui') {
+            const comfyConfig = modelSettings.videoModel.comfyui;
+            if (!comfyConfig?.endpoint || !comfyConfig?.workflowName) {
+                setError('請在模型管理中設定 ComfyUI 參數');
+                return;
+            }
+        } else if (modelSettings.videoModel.provider === 'gemini') {
+            const geminiConfig = modelSettings.videoModel.gemini;
+            if (!geminiConfig?.apiKey) {
+                setError('請在模型管理中設定 Gemini API 金鑰');
+                return;
+            }
         }
 
         // For 'selected' mode, check if any videos are selected
@@ -1619,7 +1955,7 @@ const App = () => {
                 }
 
                 try {
-                    const videoUrl = await generateVideoWithComfyUI(
+                    const videoUrl = await generateVideo(
                         currentCut.generated_image,
                         nextCut?.generated_image || null,
                         currentCut.video_prompt
@@ -2793,24 +3129,44 @@ ${facePriorityInstruction}
 
 ${videoModelConstraintInstruction}
 
-**要求:**
-- 這是最後一個鏡頭，請設計一個有力的結束動作或姿態。
-- 描述畫面中角色或物件的動態變化、表情演變，以及環境效果（如光影、風、粒子等）。
-- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭等）。
-- 使用繁體中文撰寫，保持簡潔有力。
+**連貫性要求（極為重要）:**
+- 這是最後一個鏡頭，請設計一個有力的結束動作或姿態
+- 確保動作完整：如果畫面中有未完成的動作（如攻擊怪物、開門等），必須在這個鏡頭中完成
+- 避免突兀的結束：不要讓動作或情節懸在半空中
 
-**輸出:** 只需輸出影片提示詞，不要添加任何解釋。`
-                        : `你是一位專業的影片提示詞生成師。請觀察這兩張連續的圖片，為它們之間的過渡設計一個動態影片提示詞。
+**動作與運鏡要求:**
+- 描述畫面中角色或物件的動態變化、表情演變
+- 包含環境效果（如光影、風、粒子等）
+- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭等）
+- 動作必須是單一、清晰且有力的
+
+**輸出:** 只需輸出影片提示詞，使用繁體中文，保持簡潔有力，不要添加任何解釋。`
+                        : `你是一位專業的影片提示詞生成師。請觀察這兩張連續的圖片，為它們之間的過渡設計一個動態且連貫的影片提示詞。
 
 ${videoModelConstraintInstruction}
 
-**要求:**
-- 描述從第一張圖片到第二張圖片的動態過渡過程。
-- 包含角色/物件的動作變化、表情演變，以及環境效果（如光影、風、粒子等）。
-- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭、平穩橫移等）。
-- 使用繁體中文撰寫，保持簡潔有力。
+**連貫性要求（極為重要）:**
+1. **動作完整性:** 必須完成第一張圖片中的所有動作後，才能開始轉換到第二張圖片的情境
+   - 如果怪物出現在第一張圖片，必須先處理完（打倒/逃離）再切換場景
+   - 如果人物正在執行動作，必須先完成該動作
 
-**輸出:** 只需輸出影片提示詞，不要添加任何解釋。`;
+2. **方向連貫性:** 仔細觀察人物/物體的朝向和位置
+   - 如果兩張圖片中人物都是正面朝向鏡頭，這意味著人物在第一張圖片中往前走，然後轉彎或轉身，最後在第二張圖片中又面向鏡頭
+   - 例如走迷宮：人物從第一個正面位置往前走 → 側身轉彎進入另一條通道 → 繼續往前走被拍到第二個正面位置
+   - 避免不合理的動作：如"人物往前走再轉身回來"這種邏輯錯誤
+
+3. **場景過渡:** 如果場景有變化，必須描述轉換過程
+   - 例如：從室內走出門到室外、從走廊轉入房間等
+   - 確保空間邏輯合理
+
+**動作與運鏡要求:**
+- 描述從第一張圖片到第二張圖片的完整動態過渡過程
+- 包含角色/物件的動作變化、表情演變
+- 包含環境效果（如光影、風、粒子等）
+- 包含簡單明確的運鏡指示（如緩慢推近、拉遠、固定鏡頭、平穩橫移等）
+- 動作必須是單一、清晰且有力的
+
+**輸出:** 只需輸出影片提示詞，使用繁體中文，保持簡潔有力，不要添加任何解釋。`;
 
                     // For video prompts, we need vision capabilities
                     // If using OpenAI-compatible, construct the prompt without images (for now)
@@ -2825,8 +3181,9 @@ ${videoModelConstraintInstruction}
                             ? [currentImagePart, nextImagePart, { text: videoPromptRequest }]
                             : [currentImagePart, { text: videoPromptRequest }];
 
+                        const modelName = modelSettings.languageModel.gemini?.modelName || 'gemini-2.5-flash';
                         const videoResponse = await geminiAI.models.generateContent({
-                            model: 'gemini-2.5-flash',
+                            model: modelName,
                             contents: { parts: parts },
                         });
 
@@ -3586,7 +3943,26 @@ ${videoModelConstraintInstruction}
                                     )}
                                 </div>
                                 <div className="prompt-section">
-                                    <label>影片提示詞</label>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                        <label style={{ margin: 0 }}>影片提示詞</label>
+                                        <button
+                                            className="btn btn-secondary"
+                                            onClick={async () => {
+                                                await regenerateVideoPrompt(detailCutIndex);
+                                            }}
+                                            disabled={isLoading || !storyboard[detailCutIndex].generated_image}
+                                            title="使用 AI 重新生成影片提示詞，加強動作連貫性"
+                                            style={{
+                                                padding: '6px 12px',
+                                                fontSize: '13px',
+                                                backgroundColor: '#4a9eff',
+                                                border: 'none',
+                                                color: '#fff'
+                                            }}
+                                        >
+                                            {isLoading ? '⟳ 生成中...' : '✨ 重新生成提示詞'}
+                                        </button>
+                                    </div>
                                     <textarea
                                         className="prompt-text"
                                         value={storyboard[detailCutIndex].video_prompt}
@@ -3594,6 +3970,9 @@ ${videoModelConstraintInstruction}
                                         rows={6}
                                         placeholder="請輸入影片生成的詳細描述..."
                                     />
+                                    <div style={{ marginTop: '6px', fontSize: '12px', color: '#888', lineHeight: '1.5' }}>
+                                        💡 提示：如果影片提示詞不理想，或更換圖片後需要更新，可點擊「重新生成提示詞」按鈕。AI 會分析前後圖片，確保動作連貫性和方向邏輯正確。
+                                    </div>
                                 </div>
                                 {generatedVideos[detailCutIndex] && (
                                     <div className="video-detail-actions">
